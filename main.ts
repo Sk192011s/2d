@@ -54,7 +54,7 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. ADVANCED BETTING LOGIC
+  // 2. BETTING LOGIC (Myanmar Time Fixed)
   // =========================
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
     const form = await req.formData();
@@ -76,6 +76,9 @@ serve(async (req) => {
 
     await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
     
+    // Myanmar TimeZone String
+    const mmTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: true });
+
     for (const num of numberList) {
         const betId = Date.now().toString() + Math.random().toString().substr(2, 5);
         await kv.set(["bets", betId], { 
@@ -83,7 +86,7 @@ serve(async (req) => {
             number: num.trim(), 
             amount, 
             status: "PENDING", 
-            time: new Date().toLocaleTimeString() 
+            time: mmTime 
         });
     }
 
@@ -108,6 +111,7 @@ serve(async (req) => {
     if (url.pathname === "/admin/payout") {
       const form = await req.formData();
       const winNumber = form.get("win_number")?.toString();
+      // Payout logic iterates all pending bets (cannot limit here, must check all)
       const iter = kv.list({ prefix: ["bets"] });
       for await (const entry of iter) {
         const bet = entry.value as any;
@@ -131,20 +135,67 @@ serve(async (req) => {
   // 3. UI RENDERING
   // =========================
   
-  // --- LOGIN PAGE ---
+  // Shared HTML Head with Loader CSS
+  const commonHead = `
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
+        body { font-family: 'Roboto', sans-serif; background-color: #4a3b32; color: white; }
+        .bg-theme { background-color: #4a3b32; }
+        .text-theme { color: #4a3b32; }
+        .card-gradient { background: linear-gradient(135deg, #5d4037 0%, #3e2723 100%); }
+        .tab-active { background-color: #4a3b32; color: white; }
+        .tab-inactive { background-color: #eee; color: #666; }
+        
+        /* APP LOADER STYLES */
+        #app-loader {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); z-index: 9999;
+            display: flex; justify-content: center; align-items: center;
+            transition: opacity 0.3s ease;
+        }
+        .spinner {
+            width: 50px; height: 50px; border: 5px solid #fff;
+            border-bottom-color: transparent; border-radius: 50%;
+            animation: rotation 1s linear infinite;
+        }
+        @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .hidden-loader { opacity: 0; pointer-events: none; }
+    </style>
+    <script>
+        // Loader Logic
+        window.addEventListener('load', () => {
+            const loader = document.getElementById('app-loader');
+            if(loader) loader.classList.add('hidden-loader');
+        });
+        function showLoader() {
+            const loader = document.getElementById('app-loader');
+            if(loader) loader.classList.remove('hidden-loader');
+        }
+    </script>
+  `;
+
+  const loaderHTML = `
+    <div id="app-loader">
+        <div class="spinner"></div>
+    </div>
+  `;
+
+  // LOGIN PAGE
   if (!currentUser) {
     return new Response(`
       <!DOCTYPE html>
       <html lang="en">
       <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Welcome</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-        <style>body { background-color: #4a3b32; color: white; }</style>
+        ${commonHead}
       </head>
-      <body class="h-screen flex items-center justify-center px-4">
+      <body class="h-screen flex items-center justify-center px-4 bg-[#4a3b32]">
+        ${loaderHTML}
         <div class="bg-white text-gray-800 p-6 rounded-xl w-full max-w-sm shadow-2xl text-center">
           <img src="https://img.icons8.com/color/96/shop.png" class="mx-auto mb-4 w-16">
           <h1 class="text-2xl font-bold mb-6 text-[#4a3b32]">Myanmar 2D Live</h1>
@@ -154,13 +205,13 @@ serve(async (req) => {
             <button onclick="showRegister()" id="tabReg" class="w-1/2 pb-2 text-gray-400">Register</button>
           </div>
 
-          <form id="loginForm" action="/login" method="POST">
+          <form id="loginForm" action="/login" method="POST" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
             <button class="bg-[#4a3b32] text-white font-bold w-full py-3 rounded-lg hover:bg-[#3d3029]">Login</button>
           </form>
 
-          <form id="regForm" action="/register" method="POST" class="hidden">
+          <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="New Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="New Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
             <button class="bg-[#d97736] text-white font-bold w-full py-3 rounded-lg hover:bg-[#b5602b]">Create Account</button>
@@ -198,35 +249,23 @@ serve(async (req) => {
   const userEntry = await kv.get(["users", currentUser]);
   const balance = (userEntry.value as any)?.balance || 0;
 
+  // PERFORMANCE FIX: Limit to last 50 bets using 'reverse' and 'limit'
   const bets = [];
-  const iter = kv.list({ prefix: ["bets"] });
+  const iter = kv.list({ prefix: ["bets"] }, { reverse: true, limit: 50 });
   for await (const entry of iter) {
     const b = entry.value as any;
     if (isAdmin || b.user === currentUser) bets.push(b);
   }
-  bets.reverse();
 
   return new Response(`
     <!DOCTYPE html>
     <html lang="en">
     <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>Myanmar Live 2D/3D</title>
-      <script src="https://cdn.tailwindcss.com"></script>
-      <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-      <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-      <style>
-        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
-        body { font-family: 'Roboto', sans-serif; background-color: #f0f2f5; }
-        .bg-theme { background-color: #4a3b32; }
-        .text-theme { color: #4a3b32; }
-        .card-gradient { background: linear-gradient(135deg, #5d4037 0%, #3e2723 100%); }
-        .tab-active { background-color: #4a3b32; color: white; }
-        .tab-inactive { background-color: #eee; color: #666; }
-      </style>
+      ${commonHead}
     </head>
-    <body class="max-w-md mx-auto min-h-screen bg-gray-100 pb-20">
+    <body class="max-w-md mx-auto min-h-screen bg-gray-100 pb-20 text-gray-800">
+      ${loaderHTML}
 
       <nav class="bg-theme h-14 flex justify-between items-center px-4 text-white shadow-md sticky top-0 z-50">
         <div class="font-bold text-lg">Myanmar 2D</div>
@@ -235,7 +274,7 @@ serve(async (req) => {
              <i class="fas fa-wallet text-xs text-yellow-400"></i>
              <span class="text-sm font-bold">${balance}</span>
            </div>
-           <a href="/logout" class="text-xs border border-white/30 px-2 py-1 rounded hover:bg-white/10">Logout</a>
+           <a href="/logout" onclick="showLoader()" class="text-xs border border-white/30 px-2 py-1 rounded hover:bg-white/10">Logout</a>
         </div>
       </nav>
 
@@ -265,12 +304,12 @@ serve(async (req) => {
         <div class="px-4 mb-4">
            <div class="bg-white p-4 rounded shadow border-l-4 border-red-500">
              <h3 class="font-bold text-red-600 mb-2">Admin Panel</h3>
-             <form action="/admin/topup" method="POST" class="flex gap-2 mb-2">
+             <form action="/admin/topup" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2">
                <input name="username" placeholder="User" class="w-1/3 border rounded p-1">
                <input name="amount" placeholder="Amt" type="number" class="w-1/3 border rounded p-1">
                <button class="bg-green-600 text-white w-1/3 rounded text-xs">Topup</button>
              </form>
-             <form action="/admin/payout" method="POST" class="flex gap-2">
+             <form action="/admin/payout" method="POST" onsubmit="showLoader()" class="flex gap-2">
                 <input name="win_number" placeholder="Win No" class="w-2/3 border rounded p-1">
                 <button class="bg-red-600 text-white w-1/3 rounded text-xs">Payout</button>
              </form>
@@ -278,8 +317,31 @@ serve(async (req) => {
         </div>
       ` : ''}
 
+      <div class="px-4 space-y-3 mb-6">
+        <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-200">
+          <div class="flex justify-between items-center border-b pb-2 mb-2">
+             <span class="font-bold text-gray-700 text-sm">☀️ 12:01 PM</span>
+          </div>
+          <div class="flex justify-between text-center">
+             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">SET</div><div id="set_12" class="text-gray-800 font-bold">--</div></div>
+             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">VALUE</div><div id="val_12" class="text-gray-800 font-bold">--</div></div>
+             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">2D</div><div id="res_12" class="text-2xl font-bold text-theme">--</div></div>
+          </div>
+        </div>
+        <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-200">
+          <div class="flex justify-between items-center border-b pb-2 mb-2">
+             <span class="font-bold text-gray-700 text-sm">🌙 4:30 PM</span>
+          </div>
+          <div class="flex justify-between text-center">
+             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">SET</div><div id="set_430" class="text-gray-800 font-bold">--</div></div>
+             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">VALUE</div><div id="val_430" class="text-gray-800 font-bold">--</div></div>
+             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">2D</div><div id="res_430" class="text-2xl font-bold text-theme">--</div></div>
+          </div>
+        </div>
+      </div>
+
       <div class="px-4">
-        <h3 class="font-bold text-gray-500 text-sm mb-3 uppercase tracking-wider">Betting History</h3>
+        <h3 class="font-bold text-gray-500 text-sm mb-3 uppercase tracking-wider">Betting History (Last 50)</h3>
         <div class="space-y-2 pb-10">
           ${bets.map(b => `
             <div class="bg-white p-3 rounded-lg border-l-4 ${b.status === 'WIN' ? 'border-green-500' : b.status === 'LOSE' ? 'border-red-500' : 'border-yellow-500'} shadow-sm flex justify-between items-center">
@@ -308,7 +370,7 @@ serve(async (req) => {
              <button onclick="setTab('quick')" id="btnQuick" class="flex-1 py-2 rounded tab-inactive">Quick</button>
            </div>
 
-           <form action="/bet" method="POST" class="flex-1 flex flex-col">
+           <form action="/bet" method="POST" onsubmit="showLoader()" class="flex-1 flex flex-col">
              <div id="tabDirectContent">
                 <label class="text-xs text-gray-500 font-bold">Numbers (comma separated)</label>
                 <textarea id="numberInput" name="number" class="w-full h-24 border-2 border-gray-300 rounded-lg p-2 text-lg font-bold text-gray-700 focus:border-[#4a3b32] focus:outline-none" placeholder="Ex: 12, 34, 56"></textarea>
@@ -426,6 +488,20 @@ serve(async (req) => {
                 document.getElementById('live_twod').innerText = data.live.twod || "--";
                 document.getElementById('live_date').innerText = data.live.date || "Today";
                 document.getElementById('live_time').innerText = data.live.time || "--:--:--";
+            }
+            // Result Update Logic
+            if (data.result) {
+                if(data.result[1]) {
+                    document.getElementById('set_12').innerText = data.result[1].set || "--";
+                    document.getElementById('val_12').innerText = data.result[1].value || "--";
+                    document.getElementById('res_12').innerText = data.result[1].twod || "--";
+                }
+                const evening = data.result[3] || data.result[2];
+                if(evening) {
+                    document.getElementById('set_430').innerText = evening.set || "--";
+                    document.getElementById('val_430').innerText = evening.value || "--";
+                    document.getElementById('res_430').innerText = evening.twod || "--";
+                }
             }
           } catch (e) {}
         }
