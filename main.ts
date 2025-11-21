@@ -54,7 +54,7 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. BETTING LOGIC
+  // 2. ADVANCED BETTING LOGIC
   // =========================
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
     const form = await req.formData();
@@ -131,7 +131,7 @@ serve(async (req) => {
   // 3. UI RENDERING
   // =========================
   
-  // LOGIN PAGE
+  // --- LOGIN PAGE ---
   if (!currentUser) {
     return new Response(`
       <!DOCTYPE html>
@@ -194,7 +194,7 @@ serve(async (req) => {
     `, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
-  // MAIN DASHBOARD
+  // --- DASHBOARD ---
   const userEntry = await kv.get(["users", currentUser]);
   const balance = (userEntry.value as any)?.balance || 0;
 
@@ -277,29 +277,6 @@ serve(async (req) => {
            </div>
         </div>
       ` : ''}
-
-      <div class="px-4 space-y-3 mb-6">
-        <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-200">
-          <div class="flex justify-between items-center border-b pb-2 mb-2">
-             <span class="font-bold text-gray-700 text-sm">☀️ 12:01 PM</span>
-          </div>
-          <div class="flex justify-between text-center">
-             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">SET</div><div id="set_12" class="text-gray-800 font-bold">--</div></div>
-             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">VALUE</div><div id="val_12" class="text-gray-800 font-bold">--</div></div>
-             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">2D</div><div id="res_12" class="text-2xl font-bold text-theme">--</div></div>
-          </div>
-        </div>
-        <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-200">
-          <div class="flex justify-between items-center border-b pb-2 mb-2">
-             <span class="font-bold text-gray-700 text-sm">🌙 4:30 PM</span>
-          </div>
-          <div class="flex justify-between text-center">
-             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">SET</div><div id="set_430" class="text-gray-800 font-bold">--</div></div>
-             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">VALUE</div><div id="val_430" class="text-gray-800 font-bold">--</div></div>
-             <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">2D</div><div id="res_430" class="text-2xl font-bold text-theme">--</div></div>
-          </div>
-        </div>
-      </div>
 
       <div class="px-4">
         <h3 class="font-bold text-gray-500 text-sm mb-3 uppercase tracking-wider">Betting History</h3>
@@ -449,21 +426,6 @@ serve(async (req) => {
                 document.getElementById('live_twod').innerText = data.live.twod || "--";
                 document.getElementById('live_date').innerText = data.live.date || "Today";
                 document.getElementById('live_time').innerText = data.live.time || "--:--:--";
-            }
-            // Result Update Logic
-            if (data.result) {
-                if(data.result[1]) {
-                    document.getElementById('set_12').innerText = data.result[1].set || "--";
-                    document.getElementById('val_12').innerText = data.result[1].value || "--";
-                    document.getElementById('res_12').innerText = data.result[1].twod || "--";
-                }
-                // Check index for evening (sometimes 2 or 3)
-                const evening = data.result[3] || data.result[2];
-                if(evening) {
-                    document.getElementById('set_430').innerText = evening.set || "--";
-                    document.getElementById('val_430').innerText = evening.value || "--";
-                    document.getElementById('res_430').innerText = evening.twod || "--";
-                }
             }
           } catch (e) {}
         }
