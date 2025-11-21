@@ -54,16 +54,13 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. BETTING & HISTORY LOGIC
+  // 2. BETTING LOGIC
   // =========================
-  
-  // CLEAR HISTORY FEATURE
   if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
       const iter = kv.list({ prefix: ["bets"] });
       let deletedCount = 0;
       for await (const entry of iter) {
           const bet = entry.value as any;
-          // Only delete current user's bets that are NOT pending
           if (bet.user === currentUser && bet.status !== "PENDING") {
               await kv.delete(entry.key);
               deletedCount++;
@@ -212,6 +209,14 @@ serve(async (req) => {
         }
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
+
+    // TIP MANAGEMENT
+    if (url.pathname === "/admin/tip") {
+        const form = await req.formData();
+        const tip = form.get("tip")?.toString();
+        await kv.set(["system", "tip"], tip);
+        return new Response(null, { status: 303, headers: { "Location": "/" } });
+    }
   }
 
   // =========================
@@ -306,6 +311,10 @@ serve(async (req) => {
   }
   blockedNumbers.sort();
 
+  // FETCH TIP
+  const tipEntry = await kv.get(["system", "tip"]);
+  const dailyTip = tipEntry.value || "";
+
   return new Response(`
     <!DOCTYPE html>
     <html lang="en">
@@ -334,6 +343,16 @@ serve(async (req) => {
         </div>
       </div>
 
+      ${dailyTip ? `
+      <div class="px-4 mb-4">
+        <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded shadow-sm relative">
+            <div class="font-bold flex items-center gap-2">
+                <i class="fas fa-star text-yellow-500"></i> Admin's Tip (ဒီနေ့အကြိုက်)
+            </div>
+            <p class="mt-1 text-sm font-bold text-black">${dailyTip}</p>
+        </div>
+      </div>` : ''}
+
       ${!isAdmin ? `
         <div class="px-4 mb-4">
           <button onclick="openBetModal()" class="w-full bg-theme text-white py-3 rounded-xl font-bold shadow-lg flex justify-center items-center gap-2 hover:bg-[#3d3029]">
@@ -360,6 +379,15 @@ serve(async (req) => {
                 </div>
              </form>
            </div>
+
+           <div class="bg-white p-4 rounded shadow border-l-4 border-purple-500">
+             <h3 class="font-bold text-purple-600 mb-2">Lucky Tip (ဘိုးတော်အကွက်)</h3>
+             <form action="/admin/tip" method="POST" onsubmit="showLoader()" class="flex gap-2">
+                <input name="tip" placeholder="Text (e.g. 45, 67 is hot)" class="flex-1 border rounded p-1 text-sm" value="${dailyTip}">
+                <button class="bg-purple-600 text-white px-3 rounded text-xs font-bold">UPDATE</button>
+             </form>
+           </div>
+
            <div class="bg-white p-4 rounded shadow border-l-4 border-gray-600">
              <h3 class="font-bold text-gray-600 mb-2">Manage Blocks</h3>
              <form action="/admin/block" method="POST" onsubmit="showLoader()">
