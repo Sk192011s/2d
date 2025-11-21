@@ -3,42 +3,37 @@ import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
 
 const kv = await Deno.openKv();
 
-// --- SECURITY HELPER FUNCTIONS ---
-
-// 1. Password Hashing (SHA-256 with Salt)
+// --- SECURITY HELPERS ---
 async function hashPassword(password: string, salt: string) {
   const encoder = new TextEncoder();
   const data = encoder.encode(password + salt);
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
-
-// 2. Generate Random ID
-function generateId() {
-  return crypto.randomUUID();
-}
-
-// 3. Rate Limiter (Prevent Spam/Bots)
+function generateId() { return crypto.randomUUID(); }
 async function isRateLimited(req: Request, limitType: string, maxRequests: number) {
   const ip = req.headers.get("x-forwarded-for") || "unknown";
   const key = ["ratelimit", limitType, ip];
   const entry = await kv.get(key);
   const current = (entry.value as number) || 0;
-  
   if (current >= maxRequests) return true;
-  
-  await kv.set(key, current + 1, { expireIn: 60000 }); // Reset every 1 min
+  await kv.set(key, current + 1, { expireIn: 60000 }); 
   return false;
 }
 
 serve(async (req) => {
   const url = new URL(req.url);
   
+  // *** EMERGENCY FIX: RESET ADMIN ACCOUNT ***
+  // ဒီ Link ကိုဝင်လိုက်တာနဲ့ Admin အဟောင်းပျက်ပြီး အသစ်ဖွင့်လို့ရသွားမယ်
+  if (url.pathname === "/reset_admin") {
+      await kv.delete(["users", "admin"]);
+      return new Response("Admin Account Deleted. You can now Go to Register and create 'admin' again.", { status: 200 });
+  }
+
   // =========================
-  // 1. AUTH (SECURE SESSION)
+  // 1. AUTH
   // =========================
-  
-  // Check Session from Cookie
   const cookies = req.headers.get("Cookie") || "";
   const sessionMatch = cookies.match(/session_id=([^;]+)/);
   const sessionId = sessionMatch ? sessionMatch[1] : null;
@@ -48,13 +43,11 @@ serve(async (req) => {
       const sessionEntry = await kv.get(["sessions", sessionId]);
       if (sessionEntry.value) {
           currentUser = sessionEntry.value as string;
-          // Refresh Session (Slide Expiration)
-          await kv.set(["sessions", sessionId], currentUser, { expireIn: 1296000 }); // 15 Days
+          await kv.set(["sessions", sessionId], currentUser, { expireIn: 1296000 }); 
       }
   }
   const isAdmin = currentUser === "admin";
 
-  // LOGOUT
   if (url.pathname === "/logout") {
     if (sessionId) await kv.delete(["sessions", sessionId]);
     const headers = new Headers({ "Location": "/" });
@@ -62,14 +55,13 @@ serve(async (req) => {
     return new Response(null, { status: 303, headers });
   }
 
-  // REGISTER (HASHED PASSWORD)
   if (req.method === "POST" && url.pathname === "/register") {
-    // Anti-Bot: Limit Registration (5 per min per IP)
     if (await isRateLimited(req, "register", 5)) return new Response("Too many attempts", { status: 429 });
 
     const form = await req.formData();
-    const username = form.get("username")?.toString().toLowerCase().trim(); // Normalize
+    const username = form.get("username")?.toString().toLowerCase().trim();
     const password = form.get("password")?.toString();
+    const remember = form.get("remember") === "on";
 
     if (!username || !password) return Response.redirect(url.origin + "/?error=missing_fields");
     if (username.length < 3 || password.length < 6) return Response.redirect(url.origin + "/?error=weak_password");
@@ -77,7 +69,6 @@ serve(async (req) => {
     const userEntry = await kv.get(["users", username]);
     if (userEntry.value) return Response.redirect(url.origin + "/?error=user_exists");
 
-    // Security: Hash Password
     const salt = generateId();
     const hashedPassword = await hashPassword(password, salt);
 
@@ -88,49 +79,45 @@ serve(async (req) => {
         avatar: "" 
     });
     
-    // Create Session
     const newSessionId = generateId();
-    await kv.set(["sessions", newSessionId], username, { expireIn: 1296000 });
+    const maxAge = remember ? 1296000 : 86400; 
+    await kv.set(["sessions", newSessionId], username, { expireIn: maxAge });
     
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=1296000; SameSite=Lax`);
+    headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax`);
     return new Response(null, { status: 303, headers });
   }
 
-  // LOGIN (VERIFY HASH)
   if (req.method === "POST" && url.pathname === "/login") {
-    // Anti-Bot: Limit Login (10 per min per IP)
-    if (await isRateLimited(req, "login", 10)) return new Response("Too many login attempts. Wait a minute.", { status: 429 });
+    if (await isRateLimited(req, "login", 10)) return new Response("Too many attempts", { status: 429 });
 
     const form = await req.formData();
     const username = form.get("username")?.toString().toLowerCase().trim();
     const password = form.get("password")?.toString();
+    const remember = form.get("remember") === "on";
 
     const userEntry = await kv.get(["users", username]);
     const userData = userEntry.value as any;
 
     if (!userData) return Response.redirect(url.origin + "/?error=invalid_login");
 
-    // Verify Hash
     const inputHash = await hashPassword(password, userData.salt);
-    
     if (inputHash !== userData.passwordHash) {
        return Response.redirect(url.origin + "/?error=invalid_login");
     }
 
-    // Success
     const newSessionId = generateId();
-    await kv.set(["sessions", newSessionId], username, { expireIn: 1296000 });
+    const maxAge = remember ? 1296000 : 86400;
+    await kv.set(["sessions", newSessionId], username, { expireIn: maxAge });
 
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=1296000; SameSite=Lax`);
+    headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax`);
     return new Response(null, { status: 303, headers });
   }
 
   // =========================
   // 2. PROFILE & ACTIONS
   // =========================
-  
   if (req.method === "POST" && url.pathname === "/update_avatar" && currentUser) {
       const form = await req.formData();
       const imageData = form.get("avatar")?.toString(); 
@@ -159,9 +146,6 @@ serve(async (req) => {
       return Response.redirect(url.origin + "/profile?status=error");
   }
 
-  // =========================
-  // 3. BETTING LOGIC
-  // =========================
   if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
       const iter = kv.list({ prefix: ["bets"] });
       let deletedCount = 0;
@@ -176,7 +160,6 @@ serve(async (req) => {
   }
 
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
-    // Anti-Spam: Limit Betting (1 request per second)
     if (await isRateLimited(req, "bet", 60)) return new Response(JSON.stringify({ status: "slow_down" }), { headers: { "content-type": "application/json" } });
 
     const now = new Date();
@@ -275,6 +258,7 @@ serve(async (req) => {
         const form = await req.formData();
         const targetUser = form.get("username")?.toString().toLowerCase().trim();
         const newPass = form.get("password")?.toString();
+        
         if (targetUser && newPass) {
             const userEntry = await kv.get(["users", targetUser]);
             const userData = userEntry.value as any;
@@ -441,11 +425,13 @@ serve(async (req) => {
           <form id="loginForm" action="/login" method="POST" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
+            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer"><input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)</label>
             <button class="bg-[#4a3b32] text-white font-bold w-full py-3 rounded-lg hover:bg-[#3d3029]">Login</button>
           </form>
           <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="New Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="New Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
+            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer"><input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)</label>
             <button class="bg-[#d97736] text-white font-bold w-full py-3 rounded-lg hover:bg-[#b5602b]">Create Account</button>
           </form>
         </div>
@@ -632,7 +618,7 @@ serve(async (req) => {
         function generateTail(d) { let r=[]; for(let i=0;i<10;i++) r.push(i+d); return r; }
         function generateDouble() { let r=[]; for(let i=0;i<10;i++) r.push(i+\"\"+i); return r; }
         function generateBrake(n) { if(n.length!==2)return[]; const r=n[1]+n[0]; return n===r?[n]:[n,r]; }
-        async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else if (data.status === 'error_min') Swal.fire('Error', 'Minimum bet is 50 Ks', 'error'); else if (data.status === 'error_max') Swal.fire('Error', 'Maximum bet is 100,000 Ks', 'error'); else if (data.status === 'slow_down') Swal.fire('Whoa!', 'Please slow down.', 'warning'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
+        async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else if (data.status === 'error_min') Swal.fire('Error', 'Minimum bet is 50 Ks', 'error'); else if (data.status === 'error_max') Swal.fire('Error', 'Maximum bet is 100,000 Ks', 'error'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
         function showVoucher(v) { const html = \`<div class="voucher-container"><div class="stamp">PAID</div><div class="voucher-header"><h2 class="text-xl font-bold">Myanmar 2D Voucher</h2><div class="text-xs text-gray-500">ID: \${v.id}</div><div class="text-sm mt-1">User: <b>\${v.user}</b></div><div class="text-xs text-gray-400">\${v.date} \${v.time}</div></div><div class="voucher-body">\${v.numbers.map(n => \`<div class="voucher-row"><span>\${n}</span><span>\${v.amountPerNum}</span></div>\`).join('')}</div><div class="voucher-total"><span>TOTAL</span><span>\${v.total} Ks</span></div></div>\`; document.getElementById('voucherContent').innerHTML = html; document.getElementById('voucherModal').classList.remove('hidden'); }
         const API_URL = "https://api.thaistock2d.com/live";
         async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); if(data.live) { document.getElementById('live_twod').innerText = data.live.twod || "--"; document.getElementById('live_date').innerText = data.live.date || "Today"; document.getElementById('live_time').innerText = data.live.time || "--:--:--"; } if (data.result) { if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } const ev = data.result[3] || data.result[2]; if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } } } catch (e) {} } setInterval(updateData, 2000); updateData();
