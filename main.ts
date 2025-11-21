@@ -58,13 +58,11 @@ serve(async (req) => {
   // =========================
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
     const form = await req.formData();
-    // Frontend sends "12,21,34" (comma separated)
     const numbersRaw = form.get("number")?.toString() || ""; 
     const amount = parseInt(form.get("amount")?.toString() || "0");
     
     if(!numbersRaw || amount <= 0) return Response.redirect(url.origin + "/?error=invalid_bet");
 
-    // Split numbers by comma
     const numberList = numbersRaw.split(",").filter(n => n.trim() !== "");
     const totalCost = numberList.length * amount;
 
@@ -72,15 +70,12 @@ serve(async (req) => {
     const userData = userEntry.value as any;
     const currentBalance = userData?.balance || 0;
 
-    // ERROR HANDLING: Redirect back with error param instead of white page
     if (currentBalance < totalCost) {
         return Response.redirect(url.origin + "/?status=insufficient_balance");
     }
 
-    // Deduct Balance
     await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
     
-    // Save Bets Loop
     for (const num of numberList) {
         const betId = Date.now().toString() + Math.random().toString().substr(2, 5);
         await kv.set(["bets", betId], { 
@@ -95,7 +90,7 @@ serve(async (req) => {
     return Response.redirect(url.origin + "/?status=success");
   }
 
-  // Admin Topup & Payout
+  // Admin Logic
   if (isAdmin && req.method === "POST") {
     if (url.pathname === "/admin/topup") {
       const form = await req.formData();
@@ -173,7 +168,6 @@ serve(async (req) => {
         </div>
 
         <script>
-          // Check URL params for errors
           const urlParams = new URLSearchParams(window.location.search);
           if(urlParams.get('error') === 'invalid_login') Swal.fire('Error', 'Invalid Username or Password', 'error');
           if(urlParams.get('error') === 'user_exists') Swal.fire('Error', 'Username already taken', 'error');
@@ -181,11 +175,18 @@ serve(async (req) => {
           function showLogin() {
             document.getElementById('loginForm').classList.remove('hidden');
             document.getElementById('regForm').classList.add('hidden');
-            document.getElementById('tabLogin').classList.add('border-b-2', 'border-[#4a3b32]', 'text-[#4a3b32]', 'text-gray-400'); // Simplified class logic
+            document.getElementById('tabLogin').classList.add('border-b-2', 'border-[#4a3b32]', 'text-[#4a3b32]');
+            document.getElementById('tabLogin').classList.remove('text-gray-400');
+            document.getElementById('tabReg').classList.remove('border-b-2', 'border-[#4a3b32]', 'text-[#4a3b32]');
+            document.getElementById('tabReg').classList.add('text-gray-400');
           }
           function showRegister() {
             document.getElementById('loginForm').classList.add('hidden');
             document.getElementById('regForm').classList.remove('hidden');
+            document.getElementById('tabReg').classList.add('border-b-2', 'border-[#4a3b32]', 'text-[#4a3b32]');
+            document.getElementById('tabReg').classList.remove('text-gray-400');
+            document.getElementById('tabLogin').classList.remove('border-b-2', 'border-[#4a3b32]', 'text-[#4a3b32]');
+            document.getElementById('tabLogin').classList.add('text-gray-400');
           }
         </script>
       </body>
@@ -194,7 +195,6 @@ serve(async (req) => {
   }
 
   // --- DASHBOARD ---
-
   const userEntry = await kv.get(["users", currentUser]);
   const balance = (userEntry.value as any)?.balance || 0;
 
@@ -206,7 +206,7 @@ serve(async (req) => {
   }
   bets.reverse();
 
-  const html = `
+  return new Response(`
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -298,7 +298,6 @@ serve(async (req) => {
 
       <div id="betModal" class="fixed inset-0 bg-black/90 hidden z-50 flex items-end justify-center sm:items-center">
          <div class="bg-white w-full max-w-md rounded-t-2xl sm:rounded-xl p-4 h-[80vh] sm:h-auto flex flex-col">
-           
            <div class="flex justify-between items-center mb-4">
              <h2 class="text-xl font-bold text-theme">Betting</h2>
              <button onclick="closeBetModal()" class="text-gray-500 text-2xl">&times;</button>
@@ -310,7 +309,6 @@ serve(async (req) => {
            </div>
 
            <form action="/bet" method="POST" class="flex-1 flex flex-col">
-             
              <div id="tabDirectContent">
                 <label class="text-xs text-gray-500 font-bold">Numbers (comma separated)</label>
                 <textarea id="numberInput" name="number" class="w-full h-24 border-2 border-gray-300 rounded-lg p-2 text-lg font-bold text-gray-700 focus:border-[#4a3b32] focus:outline-none" placeholder="Ex: 12, 34, 56"></textarea>
@@ -338,39 +336,23 @@ serve(async (req) => {
                <button class="w-full bg-theme text-white py-3 rounded-lg font-bold text-lg">Confirm Bet</button>
              </div>
            </form>
-
          </div>
       </div>
 
       <script>
-        // 1. Alert Handling
         const urlParams = new URLSearchParams(window.location.search);
         const status = urlParams.get('status');
 
         if(status === 'insufficient_balance') {
-           Swal.fire({
-             icon: 'error',
-             title: 'Insufficient Balance',
-             text: 'Please top up your account.',
-             confirmButtonColor: '#4a3b32'
-           });
-           // Clean URL
+           Swal.fire({ icon: 'error', title: 'Insufficient Balance', text: 'Please top up.', confirmButtonColor: '#4a3b32' });
            window.history.replaceState({}, document.title, "/");
         }
-
         if(status === 'success') {
-           Swal.fire({
-             icon: 'success',
-             title: 'Bet Placed!',
-             showConfirmButton: false,
-             timer: 1500
-           });
+           Swal.fire({ icon: 'success', title: 'Bet Placed!', showConfirmButton: false, timer: 1500 });
            window.history.replaceState({}, document.title, "/");
         }
 
-        // 2. Modal Logic
         let currentQuickMode = '';
-
         function openBetModal() { document.getElementById('betModal').classList.remove('hidden'); }
         function closeBetModal() { document.getElementById('betModal').classList.add('hidden'); }
 
@@ -399,7 +381,6 @@ serve(async (req) => {
            const input = document.getElementById('quickVal');
            
            if (mode === 'double') {
-               // Double generates immediately
                addNumbers(generateDouble());
                area.classList.add('hidden');
                Swal.fire('Added', 'Double numbers added!', 'success');
@@ -415,12 +396,10 @@ serve(async (req) => {
         function generateNumbers() {
            const val = document.getElementById('quickVal').value;
            if(!val) return;
-           
            let nums = [];
            if(currentQuickMode === 'head') nums = generateHead(val);
            if(currentQuickMode === 'tail') nums = generateTail(val);
            if(currentQuickMode === 'brake') nums = generateBrake(val);
-
            addNumbers(nums);
            document.getElementById('quickVal').value = '';
            Swal.fire('Added', nums.length + ' numbers added!', 'success');
@@ -433,29 +412,11 @@ serve(async (req) => {
            input.value = current + newNums.join(',');
         }
 
-        // Generators
-        function generateHead(digit) {
-            let res = [];
-            for(let i=0; i<10; i++) res.push(digit + i);
-            return res;
-        }
-        function generateTail(digit) {
-            let res = [];
-            for(let i=0; i<10; i++) res.push(i + digit);
-            return res;
-        }
-        function generateDouble() {
-            let res = [];
-            for(let i=0; i<10; i++) res.push(i + "" + i);
-            return res;
-        }
-        function generateBrake(num) {
-            if(num.length !== 2) return [];
-            const rev = num[1] + num[0];
-            return num === rev ? [num] : [num, rev];
-        }
+        function generateHead(digit) { let res=[]; for(let i=0;i<10;i++) res.push(digit+i); return res; }
+        function generateTail(digit) { let res=[]; for(let i=0;i<10;i++) res.push(i+digit); return res; }
+        function generateDouble() { let res=[]; for(let i=0;i<10;i++) res.push(i+\"\"+i); return res; }
+        function generateBrake(num) { if(num.length!==2)return[]; const rev=num[1]+num[0]; return num===rev?[num]:[num,rev]; }
 
-        // Live Data
         const API_URL = "https://api.thaistock2d.com/live";
         async function updateData() {
           try {
@@ -473,5 +434,7 @@ serve(async (req) => {
       </script>
     </body>
     </html>
-  `, { headers: { "content-type": "text/html; charset=utf-8" } });
+  `, {
+    headers: { "content-type": "text/html; charset=utf-8" }
+  });
 });
