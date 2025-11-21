@@ -6,8 +6,10 @@ serve(async (req) => {
   const url = new URL(req.url);
   
   // =========================
-  // 1. AUTH (Login/Register)
+  // 1. AUTH (Login/Register with 15 Days Cookie)
   // =========================
+  const cookieOptions = "; Path=/; HttpOnly; Max-Age=1296000"; // 15 Days (15*24*60*60)
+
   if (req.method === "POST" && url.pathname === "/register") {
     const form = await req.formData();
     const username = form.get("username")?.toString();
@@ -21,7 +23,7 @@ serve(async (req) => {
     await kv.set(["users", username], { password, balance: 0 });
     
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `user=${username}; Path=/; HttpOnly`);
+    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
     return new Response(null, { status: 303, headers });
   }
 
@@ -38,7 +40,7 @@ serve(async (req) => {
     }
 
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `user=${username}; Path=/; HttpOnly`);
+    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
     return new Response(null, { status: 303, headers });
   }
 
@@ -155,6 +157,23 @@ serve(async (req) => {
       }
       return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
+    
+    // PASSWORD RESET LOGIC
+    if (url.pathname === "/admin/reset_pass") {
+        const form = await req.formData();
+        const targetUser = form.get("username")?.toString();
+        const newPass = form.get("password")?.toString();
+        
+        if (targetUser && newPass) {
+            const userEntry = await kv.get(["users", targetUser]);
+            const userData = userEntry.value as any;
+            if (userData) {
+                await kv.set(["users", targetUser], { ...userData, password: newPass });
+            }
+        }
+        return new Response(null, { status: 303, headers: { "Location": "/" } });
+    }
+
     if (url.pathname === "/admin/payout") {
       const form = await req.formData();
       const winNumber = form.get("win_number")?.toString();
@@ -210,7 +229,6 @@ serve(async (req) => {
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
 
-    // TIP MANAGEMENT
     if (url.pathname === "/admin/tip") {
         const form = await req.formData();
         const tip = form.get("tip")?.toString();
@@ -250,7 +268,7 @@ serve(async (req) => {
         .voucher-total { border-top: 2px dashed #ddd; padding-top: 10px; margin-top: 10px; display: flex; justify-content: space-between; font-weight: bold; font-size: 16px; }
         .stamp { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-15deg); font-size: 3rem; color: rgba(74, 59, 50, 0.2); font-weight: bold; border: 3px solid rgba(74, 59, 50, 0.2); padding: 5px 20px; border-radius: 10px; pointer-events: none; }
         
-        /* TIP ANIMATION */
+        /* BLUE TIP ANIMATION */
         .animate-gradient-x { background-size: 200% 200%; animation: gradient-move 3s ease infinite; }
         @keyframes gradient-move { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
         .text-shadow { text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
@@ -316,7 +334,6 @@ serve(async (req) => {
   }
   blockedNumbers.sort();
 
-  // FETCH TIP
   const tipEntry = await kv.get(["system", "tip"]);
   const dailyTip = tipEntry.value || "";
 
@@ -351,11 +368,11 @@ serve(async (req) => {
       ${dailyTip ? `
       <div class="px-4 mb-4">
         <div class="relative overflow-hidden rounded-2xl shadow-lg transform transition hover:scale-105 duration-300">
-            <div class="absolute inset-0 bg-gradient-to-r from-yellow-400 via-orange-500 to-red-500 animate-gradient-x"></div>
-            <div class="relative p-1 bg-gradient-to-r from-yellow-300 to-orange-400 rounded-2xl">
+            <div class="absolute inset-0 bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-600 animate-gradient-x"></div>
+            <div class="relative p-1 bg-gradient-to-r from-cyan-300 to-blue-400 rounded-2xl">
                 <div class="bg-white/10 backdrop-blur-sm rounded-xl p-4 text-center border border-white/30">
                     <div class="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
-                        <span class="bg-white text-orange-600 px-3 py-1 rounded-full text-xs font-bold shadow-md uppercase tracking-wider flex items-center gap-1">
+                        <span class="bg-white text-blue-600 px-3 py-1 rounded-full text-xs font-bold shadow-md uppercase tracking-wider flex items-center gap-1">
                             <i class="fas fa-crown text-yellow-500"></i> VIP TIP <i class="fas fa-crown text-yellow-500"></i>
                         </span>
                     </div>
@@ -378,7 +395,7 @@ serve(async (req) => {
       ${isAdmin ? `
         <div class="px-4 mb-4 space-y-4">
            <div class="bg-white p-4 rounded shadow border-l-4 border-red-500">
-             <h3 class="font-bold text-red-600 mb-2">Admin Panel</h3>
+             <h3 class="font-bold text-red-600 mb-2">Money & Payout</h3>
              <form action="/admin/topup" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2">
                <input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm">
                <input name="amount" placeholder="Amt" type="number" class="w-1/3 border rounded p-1 text-sm">
@@ -395,11 +412,20 @@ serve(async (req) => {
              </form>
            </div>
 
-           <div class="bg-white p-4 rounded shadow border-l-4 border-purple-500">
-             <h3 class="font-bold text-purple-600 mb-2">Lucky Tip (ဘိုးတော်အကွက်)</h3>
+           <div class="bg-white p-4 rounded shadow border-l-4 border-blue-500">
+             <h3 class="font-bold text-blue-600 mb-2">Lucky Tip (ဘိုးတော်အကွက်)</h3>
              <form action="/admin/tip" method="POST" onsubmit="showLoader()" class="flex gap-2">
                 <input name="tip" placeholder="Text (e.g. 45, 67 is hot)" class="flex-1 border rounded p-1 text-sm" value="${dailyTip}">
-                <button class="bg-purple-600 text-white px-3 rounded text-xs font-bold">UPDATE</button>
+                <button class="bg-blue-600 text-white px-3 rounded text-xs font-bold">UPDATE</button>
+             </form>
+           </div>
+
+           <div class="bg-white p-4 rounded shadow border-l-4 border-yellow-500">
+             <h3 class="font-bold text-yellow-600 mb-2">Reset Password (User မေ့ရင်)</h3>
+             <form action="/admin/reset_pass" method="POST" onsubmit="showLoader()" class="flex gap-2">
+                <input name="username" placeholder="Username" class="w-1/3 border rounded p-1 text-sm" required>
+                <input name="password" placeholder="New Password" class="w-1/3 border rounded p-1 text-sm" required>
+                <button class="bg-yellow-600 text-white w-1/3 rounded text-xs font-bold">RESET</button>
              </form>
            </div>
 
