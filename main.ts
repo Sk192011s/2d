@@ -54,7 +54,7 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. BETTING LOGIC
+  // 2. BETTING LOGIC (JSON RESPONSE FOR VOUCHER)
   // =========================
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
     const now = new Date();
@@ -67,14 +67,14 @@ serve(async (req) => {
     const isEveningClose = totalMins >= 950 || totalMins < 480; 
 
     if (isMorningClose || isEveningClose) {
-        return Response.redirect(url.origin + "/?status=market_closed");
+        return new Response(JSON.stringify({ status: "market_closed" }), { headers: { "content-type": "application/json" } });
     }
 
     const form = await req.formData();
     const numbersRaw = form.get("number")?.toString() || ""; 
     const amount = parseInt(form.get("amount")?.toString() || "0");
     
-    if(!numbersRaw || amount <= 0) return Response.redirect(url.origin + "/?error=invalid_bet");
+    if(!numbersRaw || amount <= 0) return new Response(JSON.stringify({ status: "invalid_bet" }), { headers: { "content-type": "application/json" } });
 
     const numberList = numbersRaw.split(",").filter(n => n.trim() !== "");
     
@@ -82,7 +82,7 @@ serve(async (req) => {
     for (const num of numberList) {
         const isBlocked = await kv.get(["blocks", num.trim()]);
         if (isBlocked.value) {
-            return Response.redirect(url.origin + "/?status=blocked&num=" + num.trim());
+            return new Response(JSON.stringify({ status: "blocked", num: num.trim() }), { headers: { "content-type": "application/json" } });
         }
     }
 
@@ -92,12 +92,13 @@ serve(async (req) => {
     const currentBalance = userData?.balance || 0;
 
     if (currentBalance < totalCost) {
-        return Response.redirect(url.origin + "/?status=insufficient_balance");
+        return new Response(JSON.stringify({ status: "insufficient_balance" }), { headers: { "content-type": "application/json" } });
     }
 
     await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
     
     const timeString = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", hour: 'numeric', minute: 'numeric', hour12: true });
+    const dateString = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", day: 'numeric', month: 'short', year: 'numeric' });
 
     for (const num of numberList) {
         const betId = Date.now().toString() + Math.random().toString().substr(2, 5);
@@ -111,7 +112,19 @@ serve(async (req) => {
         });
     }
 
-    return Response.redirect(url.origin + "/?status=success");
+    // SUCCESS: Return Voucher Data
+    return new Response(JSON.stringify({ 
+        status: "success",
+        voucher: {
+            user: currentUser,
+            date: dateString,
+            time: timeString,
+            numbers: numberList,
+            amountPerNum: amount,
+            total: totalCost,
+            id: Date.now().toString().slice(-6) // Short ID
+        }
+    }), { headers: { "content-type": "application/json" } });
   }
 
   // =========================
@@ -162,21 +175,18 @@ serve(async (req) => {
       return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
 
-    // UPDATED BLOCK LOGIC
     if (url.pathname === "/admin/block") {
         const form = await req.formData();
-        const action = form.get("action")?.toString(); // 'add', 'clear', 'unblock'
+        const action = form.get("action")?.toString();
         const val = form.get("block_val")?.toString() || "";
         const type = form.get("block_type")?.toString() || "direct";
 
         if (action === "clear") {
             const iter = kv.list({ prefix: ["blocks"] });
             for await (const entry of iter) await kv.delete(entry.key);
-        } 
-        else if (action === "unblock" && val) {
+        } else if (action === "unblock" && val) {
             await kv.delete(["blocks", val]);
-        }
-        else if (action === "add" && val) {
+        } else if (action === "add" && val) {
             let numsToBlock = [];
             if (type === "direct") numsToBlock.push(val.padStart(2, '0'));
             else if (type === "head") for(let i=0; i<10; i++) numsToBlock.push(val + i);
@@ -214,10 +224,19 @@ serve(async (req) => {
         .history-scroll::-webkit-scrollbar { width: 4px; }
         .history-scroll::-webkit-scrollbar-track { background: #f1f1f1; }
         .history-scroll::-webkit-scrollbar-thumb { background: #888; border-radius: 2px; }
+        
+        /* VOUCHER STYLES */
+        .voucher-container { background: white; color: #333; padding: 20px; border-radius: 10px; position: relative; }
+        .voucher-header { text-align: center; border-bottom: 2px dashed #ddd; padding-bottom: 15px; margin-bottom: 15px; }
+        .voucher-body { max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 14px; }
+        .voucher-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
+        .voucher-total { border-top: 2px dashed #ddd; padding-top: 10px; margin-top: 10px; display: flex; justify-content: space-between; font-weight: bold; font-size: 16px; }
+        .stamp { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-15deg); font-size: 3rem; color: rgba(74, 59, 50, 0.2); font-weight: bold; border: 3px solid rgba(74, 59, 50, 0.2); padding: 5px 20px; border-radius: 10px; pointer-events: none; }
     </style>
     <script>
         window.addEventListener('load', () => { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); });
         function showLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.remove('hidden-loader'); }
+        function hideLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); }
     </script>
   `;
   const loaderHTML = `<div id="app-loader"><div class="spinner"></div></div>`;
@@ -266,10 +285,11 @@ serve(async (req) => {
     if (isAdmin || b.user === currentUser) bets.push(b);
   }
 
-  // FETCH BLOCKED NUMBERS LIST
+  let blockedCount = 0;
   const blockedNumbers = [];
   const blockIter = kv.list({ prefix: ["blocks"] });
   for await (const entry of blockIter) {
+      blockedCount++;
       blockedNumbers.push(entry.key[1]);
   }
   blockedNumbers.sort();
@@ -284,7 +304,7 @@ serve(async (req) => {
         <div class="font-bold text-lg uppercase tracking-wider"><i class="fas fa-user-circle mr-2"></i>${currentUser}</div>
         <div class="flex gap-4 items-center">
            <div class="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full border border-white/20">
-             <i class="fas fa-wallet text-xs text-yellow-400"></i><span class="text-sm font-bold">${balance.toLocaleString()} Ks</span>
+             <i class="fas fa-wallet text-xs text-yellow-400"></i><span id="navBalance" class="text-sm font-bold">${balance.toLocaleString()} Ks</span>
            </div>
            <a href="/logout" onclick="showLoader()" class="text-xs border border-white/30 px-2 py-1 rounded hover:bg-white/10">Logout</a>
         </div>
@@ -329,39 +349,29 @@ serve(async (req) => {
                 </div>
              </form>
            </div>
-
            <div class="bg-white p-4 rounded shadow border-l-4 border-gray-600">
              <h3 class="font-bold text-gray-600 mb-2">Manage Blocks</h3>
-             
              <form action="/admin/block" method="POST" onsubmit="showLoader()">
                 <input type="hidden" name="action" value="add">
                 <div class="flex gap-2 mb-2">
-                   <input name="block_val" type="number" placeholder="Num (e.g. 5)" class="w-1/2 border rounded p-2 text-center font-bold">
+                   <input name="block_val" type="number" placeholder="Num" class="w-1/2 border rounded p-2 text-center font-bold">
                    <select name="block_type" class="w-1/2 border rounded p-2 text-xs font-bold">
-                      <option value="direct">Direct (ဒဲ့)</option>
-                      <option value="head">Head (ထိပ်)</option>
-                      <option value="tail">Tail (နောက်)</option>
+                      <option value="direct">Direct</option><option value="head">Head</option><option value="tail">Tail</option>
                    </select>
                 </div>
                 <div class="flex gap-2">
-                    <button class="bg-gray-800 text-white flex-1 py-2 rounded text-xs font-bold">BLOCK NUMBER</button>
-                    <button type="submit" formaction="/admin/block" name="action" value="clear" class="bg-red-500 text-white w-1/3 py-2 rounded text-xs font-bold">CLEAR ALL</button>
+                    <button class="bg-gray-800 text-white flex-1 py-2 rounded text-xs font-bold">BLOCK</button>
+                    <button type="submit" formaction="/admin/block" name="action" value="clear" class="bg-red-500 text-white w-1/3 py-2 rounded text-xs font-bold">CLEAR</button>
                 </div>
              </form>
-
              <div class="mt-4 border-t pt-2">
-                 <label class="text-xs font-bold text-gray-400 mb-2 block">Currently Blocked:</label>
+                 <label class="text-xs font-bold text-gray-400 mb-2 block">Blocked (${blockedCount}):</label>
                  <div class="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
-                    ${blockedNumbers.length === 0 ? '<span class="text-xs text-gray-400">No blocked numbers</span>' : ''}
                     ${blockedNumbers.map(n => `
                         <form action="/admin/block" method="POST" style="display:inline;">
-                            <input type="hidden" name="action" value="unblock">
-                            <input type="hidden" name="block_val" value="${n}">
-                            <button class="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold border border-red-200 hover:bg-red-200 flex items-center gap-1">
-                                ${n} <i class="fas fa-times-circle"></i>
-                            </button>
-                        </form>
-                    `).join('')}
+                            <input type="hidden" name="action" value="unblock"><input type="hidden" name="block_val" value="${n}">
+                            <button class="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold border border-red-200 hover:bg-red-200 flex items-center gap-1">${n} <i class="fas fa-times-circle"></i></button>
+                        </form>`).join('')}
                  </div>
              </div>
            </div>
@@ -396,7 +406,7 @@ serve(async (req) => {
          <div class="bg-white w-full max-w-md rounded-t-2xl sm:rounded-xl p-4 h-auto flex flex-col">
            <div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-theme">Betting</h2><button onclick="closeBetModal()" class="text-gray-500 text-2xl">&times;</button></div>
            <div class="flex gap-2 mb-4 text-sm font-bold"><button onclick="setTab('direct')" id="btnDirect" class="flex-1 py-2 rounded tab-active">Direct</button><button onclick="setTab('quick')" id="btnQuick" class="flex-1 py-2 rounded tab-inactive">Quick</button></div>
-           <form action="/bet" method="POST" onsubmit="showLoader()" class="flex-1 flex flex-col">
+           <form id="betForm" onsubmit="placeBet(event)" class="flex-1 flex flex-col">
              <div id="tabDirectContent">
                 <label class="text-xs text-gray-500 font-bold">Numbers (comma separated)</label>
                 <textarea id="numberInput" name="number" class="w-full h-20 border-2 border-gray-300 rounded-lg p-2 text-lg font-bold text-gray-700 focus:border-[#4a3b32] focus:outline-none" placeholder="Ex: 12, 34, 56"></textarea>
@@ -425,13 +435,20 @@ serve(async (req) => {
          </div>
       </div>
 
+      <div id="voucherModal" class="fixed inset-0 bg-black/90 hidden z-[100] flex items-center justify-center p-4">
+         <div class="bg-white w-full max-w-sm rounded-lg overflow-hidden shadow-2xl relative">
+            <button onclick="document.getElementById('voucherModal').classList.add('hidden'); window.location.reload();" class="absolute top-2 right-3 text-gray-400 text-2xl">&times;</button>
+            <div id="voucherContent" class="p-4">
+               </div>
+            <div class="bg-gray-100 p-3 text-center">
+                <button onclick="document.getElementById('voucherModal').classList.add('hidden'); window.location.reload();" class="bg-theme text-white w-full py-2 rounded font-bold">Close</button>
+            </div>
+         </div>
+      </div>
+
       <script>
         const p = new URLSearchParams(window.location.search);
-        const s = p.get('status');
-        if(s==='insufficient_balance') Swal.fire({icon:'error',title:'Insufficient Balance',text:'Please top up.',confirmButtonColor:'#4a3b32'});
-        if(s==='market_closed') Swal.fire({icon:'warning',title:'Market Closed',text:'Betting is currently closed.',confirmButtonColor:'#d97736'});
-        if(s==='blocked'){ Swal.fire({icon:'error',title:'Blocked',text:'Number '+p.get('num')+' is closed.',confirmButtonColor:'#d33'}); window.history.replaceState({},document.title,"/"); }
-        if(s==='success'){ Swal.fire({icon:'success',title:'Bet Placed!',showConfirmButton:false,timer:1500}); window.history.replaceState({},document.title,"/"); }
+        if(p.get('status')==='market_closed') Swal.fire({icon:'warning',title:'Market Closed',text:'Betting is currently closed.',confirmButtonColor:'#d97736'});
 
         let currentQuickMode = '';
         function openBetModal() { document.getElementById('betModal').classList.remove('hidden'); }
@@ -460,6 +477,62 @@ serve(async (req) => {
         function generateTail(d) { let r=[]; for(let i=0;i<10;i++) r.push(i+d); return r; }
         function generateDouble() { let r=[]; for(let i=0;i<10;i++) r.push(i+\"\"+i); return r; }
         function generateBrake(n) { if(n.length!==2)return[]; const r=n[1]+n[0]; return n===r?[n]:[n,r]; }
+
+        // AJAX BET PLACEMENT
+        async function placeBet(e) {
+            e.preventDefault();
+            showLoader();
+            const formData = new FormData(e.target);
+            try {
+                const res = await fetch('/bet', { method: 'POST', body: formData });
+                const data = await res.json();
+                hideLoader();
+                
+                if (data.status === 'success') {
+                    closeBetModal();
+                    showVoucher(data.voucher);
+                } else if (data.status === 'blocked') {
+                    Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error');
+                } else if (data.status === 'insufficient_balance') {
+                    Swal.fire('Error', 'Insufficient Balance', 'error');
+                } else if (data.status === 'market_closed') {
+                    Swal.fire('Closed', 'Market is currently closed.', 'warning');
+                } else {
+                    Swal.fire('Error', 'Invalid Bet', 'error');
+                }
+            } catch (err) {
+                hideLoader();
+                Swal.fire('Error', 'Connection Failed', 'error');
+            }
+        }
+
+        function showVoucher(v) {
+            const html = \`
+                <div class="voucher-container">
+                    <div class="stamp">PAID</div>
+                    <div class="voucher-header">
+                        <h2 class="text-xl font-bold">Myanmar 2D Voucher</h2>
+                        <div class="text-xs text-gray-500">ID: \${v.id}</div>
+                        <div class="text-sm mt-1">User: <b>\${v.user}</b></div>
+                        <div class="text-xs text-gray-400">\${v.date} \${v.time}</div>
+                    </div>
+                    <div class="voucher-body">
+                        \${v.numbers.map(n => \`
+                            <div class="voucher-row">
+                                <span>\${n}</span>
+                                <span>\${v.amountPerNum}</span>
+                            </div>
+                        \`).join('')}
+                    </div>
+                    <div class="voucher-total">
+                        <span>TOTAL</span>
+                        <span>\${v.total} Ks</span>
+                    </div>
+                </div>
+            \`;
+            document.getElementById('voucherContent').innerHTML = html;
+            document.getElementById('voucherModal').classList.remove('hidden');
+        }
 
         const API_URL = "https://api.thaistock2d.com/live";
         async function updateData() {
