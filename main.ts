@@ -249,6 +249,11 @@ serve(async (req) => {
         .voucher-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
         .voucher-total { border-top: 2px dashed #ddd; padding-top: 10px; margin-top: 10px; display: flex; justify-content: space-between; font-weight: bold; font-size: 16px; }
         .stamp { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-15deg); font-size: 3rem; color: rgba(74, 59, 50, 0.2); font-weight: bold; border: 3px solid rgba(74, 59, 50, 0.2); padding: 5px 20px; border-radius: 10px; pointer-events: none; }
+        
+        /* TIP ANIMATION */
+        .animate-gradient-x { background-size: 200% 200%; animation: gradient-move 3s ease infinite; }
+        @keyframes gradient-move { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+        .text-shadow { text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
     </style>
     <script>
         window.addEventListener('load', () => { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); });
@@ -345,11 +350,21 @@ serve(async (req) => {
 
       ${dailyTip ? `
       <div class="px-4 mb-4">
-        <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded shadow-sm relative">
-            <div class="font-bold flex items-center gap-2">
-                <i class="fas fa-star text-yellow-500"></i> Admin's Tip (ဒီနေ့အကြိုက်)
+        <div class="relative overflow-hidden rounded-2xl shadow-lg transform transition hover:scale-105 duration-300">
+            <div class="absolute inset-0 bg-gradient-to-r from-yellow-400 via-orange-500 to-red-500 animate-gradient-x"></div>
+            <div class="relative p-1 bg-gradient-to-r from-yellow-300 to-orange-400 rounded-2xl">
+                <div class="bg-white/10 backdrop-blur-sm rounded-xl p-4 text-center border border-white/30">
+                    <div class="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
+                        <span class="bg-white text-orange-600 px-3 py-1 rounded-full text-xs font-bold shadow-md uppercase tracking-wider flex items-center gap-1">
+                            <i class="fas fa-crown text-yellow-500"></i> VIP TIP <i class="fas fa-crown text-yellow-500"></i>
+                        </span>
+                    </div>
+                    <div class="mt-2">
+                        <p class="text-white text-shadow font-bold text-lg tracking-wide drop-shadow-md">${dailyTip}</p>
+                        <div class="mt-1 text-[10px] text-white/80 uppercase font-bold tracking-widest">Good Luck Today!</div>
+                    </div>
+                </div>
             </div>
-            <p class="mt-1 text-sm font-bold text-black">${dailyTip}</p>
         </div>
       </div>` : ''}
 
