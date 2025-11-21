@@ -29,18 +29,27 @@ Deno.cron("Save History", "*/10 * * * *", async () => {
     const now = new Date();
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
+    
     const day = mmDate.getDay();
     if (day === 0 || day === 6) return; 
-    let morning = "--", evening = "--";
+
+    let morning = "--";
+    let evening = "--";
+
     if (data.result) {
-        if (data.result[1]?.twod) morning = data.result[1].twod;
+        if (data.result[1] && data.result[1].twod) morning = data.result[1].twod;
         const ev = data.result[3] || data.result[2];
-        if (ev?.twod) evening = ev.twod;
+        if (ev && ev.twod) evening = ev.twod;
     }
+
     if (morning !== "--" || evening !== "--") {
         const existing = await kv.get(["history", dateKey]);
         const oldVal = existing.value as any || { morning: "--", evening: "--" };
-        await kv.set(["history", dateKey], { morning: morning !== "--" ? morning : oldVal.morning, evening: evening !== "--" ? evening : oldVal.evening, date: dateKey });
+        await kv.set(["history", dateKey], {
+            morning: morning !== "--" ? morning : oldVal.morning,
+            evening: evening !== "--" ? evening : oldVal.evening,
+            date: dateKey
+        });
     }
   } catch (e) { console.error(e); }
 });
@@ -48,7 +57,10 @@ Deno.cron("Save History", "*/10 * * * *", async () => {
 serve(async (req) => {
   const url = new URL(req.url);
 
-  if (url.pathname === "/reset_admin") { await kv.delete(["users", "admin"]); return new Response("Admin Deleted.", { status: 200 }); }
+  if (url.pathname === "/reset_admin") {
+      await kv.delete(["users", "admin"]);
+      return new Response("Admin Deleted. Register again.", { status: 200 });
+  }
   
   const cookieOptions = "; Path=/; HttpOnly; Max-Age=1296000"; 
 
@@ -58,15 +70,19 @@ serve(async (req) => {
     const username = form.get("username")?.toString().trim();
     const password = form.get("password")?.toString();
     const remember = form.get("remember") === "on";
+
     if (!username || !password) return Response.redirect(url.origin + "/?error=missing_fields");
     const userEntry = await kv.get(["users", username]);
     if (userEntry.value) return Response.redirect(url.origin + "/?error=user_exists");
+
     const salt = generateId();
     const hashedPassword = await hashPassword(password, salt);
     await kv.set(["users", username], { passwordHash: hashedPassword, salt: salt, balance: 0, avatar: "" });
+    
     const newSessionId = generateId();
     const maxAge = remember ? 1296000 : 86400; 
     await kv.set(["sessions", newSessionId], username, { expireIn: maxAge });
+    
     const headers = new Headers({ "Location": "/" });
     headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax`);
     headers.append("Set-Cookie", `user=${encodeURIComponent(username)}; Path=/; Max-Age=${maxAge}`);
@@ -79,21 +95,28 @@ serve(async (req) => {
     const username = form.get("username")?.toString().trim();
     const password = form.get("password")?.toString();
     const remember = form.get("remember") === "on";
+
     const userEntry = await kv.get(["users", username]);
     const userData = userEntry.value as any;
+
     if (!userData) return Response.redirect(url.origin + "/?error=invalid_login");
+
     const inputHash = await hashPassword(password, userData.salt || "");
     const isValid = userData.passwordHash ? (inputHash === userData.passwordHash) : (password === userData.password);
+
     if (!isValid) return Response.redirect(url.origin + "/?error=invalid_login");
+
     if (!userData.passwordHash) {
         const salt = generateId();
         const newHash = await hashPassword(password, salt);
         const { password: _, ...rest } = userData;
         await kv.set(["users", username], { ...rest, passwordHash: newHash, salt: salt });
     }
+
     const newSessionId = generateId();
     const maxAge = remember ? 1296000 : 86400;
     await kv.set(["sessions", newSessionId], username, { expireIn: maxAge });
+
     const headers = new Headers({ "Location": "/" });
     headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax`);
     headers.append("Set-Cookie", `user=${encodeURIComponent(username)}; Path=/; Max-Age=${maxAge}`);
@@ -112,6 +135,7 @@ serve(async (req) => {
   const cookies = req.headers.get("Cookie") || "";
   const sessionMatch = cookies.match(/session_id=([^;]+)/);
   const sessionId = sessionMatch ? sessionMatch[1] : null;
+  
   let currentUser = null;
   if (sessionId) {
       const sessionEntry = await kv.get(["sessions", sessionId]);
@@ -164,6 +188,7 @@ serve(async (req) => {
 
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
     if (await isRateLimited(req, "bet", 60)) return new Response(JSON.stringify({ status: "slow_down" }), { headers: { "content-type": "application/json" } });
+
     const now = new Date();
     const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
     const timePart = mmString.split(", ")[1];
@@ -195,6 +220,7 @@ serve(async (req) => {
     if (currentBalance < totalCost) return new Response(JSON.stringify({ status: "insufficient_balance" }), { headers: { "content-type": "application/json" } });
 
     await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
+    
     const timeString = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", hour: 'numeric', minute: 'numeric', hour12: true });
     const dateString = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", day: 'numeric', month: 'short', year: 'numeric' });
 
@@ -202,9 +228,14 @@ serve(async (req) => {
         const betId = Date.now().toString() + Math.random().toString().substr(2, 5);
         await kv.set(["bets", betId], { user: currentUser, number: num.trim(), amount, status: "PENDING", time: timeString, rawMins: totalMins });
     }
-    return new Response(JSON.stringify({ status: "success", voucher: { user: currentUser, date: dateString, time: timeString, numbers: numberList, amountPerNum: amount, total: totalCost, id: Date.now().toString().slice(-6) } }), { headers: { "content-type": "application/json" } });
+
+    return new Response(JSON.stringify({ 
+        status: "success",
+        voucher: { user: currentUser, date: dateString, time: timeString, numbers: numberList, amountPerNum: amount, total: totalCost, id: Date.now().toString().slice(-6) }
+    }), { headers: { "content-type": "application/json" } });
   }
 
+  // ADMIN
   if (isAdmin && req.method === "POST") {
     if (url.pathname === "/admin/topup") {
       const form = await req.formData();
@@ -237,7 +268,11 @@ serve(async (req) => {
     }
     if (url.pathname === "/admin/contact") {
         const form = await req.formData();
-        const contactData = { kpay_name: form.get("kpay_name")||"Admin", kpay_no: form.get("kpay_no")||"09-", kpay_img: form.get("kpay_img")||"", wave_name: form.get("wave_name")||"Admin", wave_no: form.get("wave_no")||"09-", wave_img: form.get("wave_img")||"", tele_link: form.get("tele_link")||"#" };
+        const contactData = {
+            kpay_name: form.get("kpay_name") || "Admin", kpay_no: form.get("kpay_no") || "09-", kpay_img: form.get("kpay_img") || "",
+            wave_name: form.get("wave_name") || "Admin", wave_no: form.get("wave_no") || "09-", wave_img: form.get("wave_img") || "",
+            tele_link: form.get("tele_link") || "#"
+        };
         await kv.set(["system", "contact"], contactData);
         return new Response(null, { status: 303, headers: { "Location": "/profile" } });
     }
@@ -315,52 +350,52 @@ serve(async (req) => {
   const commonHead = `
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <script src="/lib/tailwind.js"></script>
-    <script src="/lib/swal.js"></script>
-    <link href="/lib/fa.css" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
         body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: white; -webkit-tap-highlight-color: transparent; padding-bottom: 80px; }
-        /* GLASSMORPHISM UI */
-        .glass-panel { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
-        .glass-card { background: linear-gradient(145deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.9)); border: 1px solid rgba(255,255,255,0.05); }
+        .bg-card { background-color: #1f2937; }
         .text-gold { color: #fbbf24; text-shadow: 0 0 10px rgba(251, 191, 36, 0.3); }
         .btn-primary { background: linear-gradient(to right, #3b82f6, #2563eb); color: white; box-shadow: 0 4px 15px rgba(37, 99, 235, 0.3); }
         .btn-gold { background: linear-gradient(to right, #f59e0b, #d97706); color: white; box-shadow: 0 4px 15px rgba(245, 158, 11, 0.3); }
-        
         .bottom-nav { position: fixed; bottom: 0; left: 0; width: 100%; background: rgba(15, 23, 42, 0.95); backdrop-filter: blur(10px); border-top: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-around; padding: 12px 0; z-index: 50; }
         .nav-item { display: flex; flex-direction: column; align-items: center; color: #64748b; font-size: 10px; transition: color 0.3s; }
         .nav-item.active { color: #3b82f6; }
         .nav-item i { font-size: 20px; margin-bottom: 2px; }
-
         #app-loader { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.9); z-index: 9999; display: flex; justify-content: center; align-items: center; transition: opacity 0.3s ease; }
         .spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .hidden-loader { opacity: 0; pointer-events: none; display: none !important; }
-
         .animate-gradient-x { background-size: 200% 200%; animation: gradient-move 3s ease infinite; }
         @keyframes gradient-move { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
-        
         .swal2-popup.swal2-toast { background: #1e293b !important; color: white !important; border: 1px solid rgba(255,255,255,0.1); }
-        
-        /* CUSTOM SCROLL */
         ::-webkit-scrollbar { width: 0px; }
     </style>
     <script>
         const Toast = Swal.mixin({ toast: true, position: 'top', showConfirmButton: false, timer: 3000, timerProgressBar: true });
-        window.addEventListener('pageshow', () => { document.getElementById('app-loader').classList.add('hidden-loader'); });
+        // FIX: Check if splash should show
         window.addEventListener('load', () => { 
              document.getElementById('app-loader').classList.add('hidden-loader');
-             if(!sessionStorage.getItem('splash')){ 
-                 document.getElementById('splash').style.display='flex';
-                 setTimeout(()=>{ document.getElementById('splash').style.opacity='0'; setTimeout(()=>document.getElementById('splash').style.display='none',500); sessionStorage.setItem('splash','1'); }, 2000);
-             } else { document.getElementById('splash').style.display='none'; }
+             const splash = document.getElementById('splash-screen');
+             if(splash) {
+                 if(sessionStorage.getItem('splash_shown')){ 
+                    splash.style.display='none'; 
+                 } else { 
+                    setTimeout(()=>{
+                        splash.style.opacity='0'; 
+                        setTimeout(()=>{ splash.style.display='none'; sessionStorage.setItem('splash_shown','1'); },500); 
+                    }, 2000);
+                 }
+             }
         });
         function showLoader(){ document.getElementById('app-loader').classList.remove('hidden-loader'); }
     </script>
   `;
   const loaderHTML = `<div id="app-loader"><div class="spinner"></div></div>`;
-  const splashHTML = `<div id="splash" style="position:fixed;inset:0;background:#0f172a;z-index:10000;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity 0.5s;"><div class="w-24 h-24 bg-blue-600 rounded-2xl flex items-center justify-center mb-4 shadow-2xl shadow-blue-500/50"><i class="fas fa-chart-line text-4xl text-white"></i></div><h1 class="text-2xl font-bold text-white tracking-widest">MYANMAR 2D</h1><p class="text-blue-400 text-xs mt-2 uppercase tracking-widest">Premium Betting</p></div>`;
+  // FIX ID HERE: id="splash-screen" to match script
+  const splashHTML = `<div id="splash-screen" style="position:fixed;inset:0;background:#0f172a;z-index:10000;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity 0.5s;"><div class="w-24 h-24 bg-blue-600 rounded-2xl flex items-center justify-center mb-4 shadow-2xl shadow-blue-500/50"><i class="fas fa-chart-line text-4xl text-white"></i></div><h1 class="text-2xl font-bold text-white tracking-widest">MYANMAR 2D</h1><p class="text-blue-400 text-xs mt-2 uppercase tracking-widest">Premium Betting</p></div>`;
 
   // LOGIN PAGE
   if (!currentUser) {
@@ -499,7 +534,7 @@ serve(async (req) => {
                 <div class="glass-card p-4 rounded-xl flex flex-col items-center relative overflow-hidden group"><div class="absolute top-0 left-0 w-full h-1 bg-purple-500/50"></div><div class="text-xs text-slate-400 font-bold mb-1">04:30 PM</div><div id="res_430" class="text-3xl font-bold text-white group-hover:text-purple-400 transition">--</div><div id="set_430" class="text-[10px] text-slate-500 mt-1 font-mono">SET: --</div></div>
             </div>
 
-            <div class="flex justify-between items-end mb-3"><h3 class="font-bold text-slate-400 text-xs uppercase tracking-wider">Recent Bets</h3><div class="relative"><input type="text" id="historySearch" onkeyup="filterHistory()" placeholder="Search" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white w-24 text-center outline-none focus:border-blue-500 transition"></div></div>
+            <div class="flex justify-between items-end mb-3"><h3 class="font-bold text-slate-400 text-xs uppercase">Recent Bets</h3><div class="relative"><input type="text" id="historySearch" onkeyup="filterHistory()" placeholder="Search" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white w-24 text-center outline-none focus:border-blue-500 transition"></div></div>
             <div id="historyList" class="space-y-2.5 h-auto pb-24">
                 ${bets.map(b => `<div class="history-item bg-slate-800/50 p-3.5 rounded-xl border-l-2 ${b.status==='WIN'?'border-green-500 bg-green-500/5':b.status==='LOSE'?'border-red-500 bg-red-500/5':'border-yellow-500'} flex justify-between items-center backdrop-blur-sm"><div class="flex items-center gap-3"><div class="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center text-lg font-bold text-white shadow-inner bet-number">${b.number}</div><div><div class="text-[10px] text-slate-400 font-bold uppercase">${b.status}</div><div class="text-[10px] text-slate-500">${b.time}</div></div></div><div class="text-right"><div class="text-gold font-bold text-sm">${b.amount.toLocaleString()}</div><div class="text-[10px] text-slate-500">Ks</div></div></div>`).join('')}
                 ${bets.length===0?'<div class="text-center text-slate-600 text-xs mt-10 border-2 border-dashed border-slate-800 rounded-xl p-6">No bets placed yet</div>':''}
