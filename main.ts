@@ -56,9 +56,8 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. PROFILE & CONTACT DATA
+  // 2. LOGIC & DATA
   // =========================
-  
   if (req.method === "POST" && url.pathname === "/change_password" && currentUser) {
       const form = await req.formData();
       const newPass = form.get("new_password")?.toString();
@@ -166,7 +165,6 @@ serve(async (req) => {
         const userData = userEntry.value as any;
         if(userData) {
             await kv.set(["users", targetUser], { ...userData, balance: (userData.balance || 0) + amount });
-            // Log
             await kv.set(["transactions", Date.now().toString()], {
                 user: targetUser, amount: amount, type: "TOPUP", time: new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" })
             });
@@ -190,7 +188,6 @@ serve(async (req) => {
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
 
-    // UPDATE CONTACT INFO
     if (url.pathname === "/admin/contact") {
         const form = await req.formData();
         const contactData = {
@@ -310,9 +307,35 @@ serve(async (req) => {
         .text-shadow { text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
     </style>
     <script>
-        window.addEventListener('load', () => { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); setTimeout(() => { const s = document.getElementById('splash-screen'); if(s) { s.style.opacity='0'; setTimeout(()=>s.style.display='none',700); } }, 1500); });
+        // SPLASH LOGIC: Show only if 'splash_shown' is NOT in sessionStorage
+        window.addEventListener('load', () => { 
+            const l = document.getElementById('app-loader'); 
+            if(l) l.classList.add('hidden-loader'); 
+            
+            const splash = document.getElementById('splash-screen');
+            if (splash) {
+                if (sessionStorage.getItem('splash_shown')) {
+                    splash.style.display = 'none';
+                } else {
+                    // Show splash, then flag it
+                    setTimeout(() => { 
+                        splash.style.opacity='0'; 
+                        setTimeout(() => {
+                            splash.style.display='none';
+                            sessionStorage.setItem('splash_shown', 'true');
+                        }, 700); 
+                    }, 1500);
+                }
+            }
+        });
         function showLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.remove('hidden-loader'); }
         function hideLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); }
+        
+        // LOGOUT LOGIC: Clear session flag so splash shows on next login
+        function doLogout() {
+            sessionStorage.removeItem('splash_shown');
+            showLoader();
+        }
     </script>
   `;
   const loaderHTML = `<div id="app-loader"><div class="spinner"></div></div>`;
@@ -362,17 +385,13 @@ serve(async (req) => {
   const userEntry = await kv.get(["users", currentUser]);
   const balance = (userEntry.value as any)?.balance || 0;
 
-  // PROFILE PAGE
   if (url.pathname === "/profile") {
-      // Fetch Transactions
       const transactions = [];
       const txIter = kv.list({ prefix: ["transactions"] }, { reverse: true, limit: 50 });
       for await (const entry of txIter) {
           const tx = entry.value as any;
           if (tx.user === currentUser) transactions.push(tx);
       }
-      
-      // Fetch Contact Info
       const contactEntry = await kv.get(["system", "contact"]);
       const contact = contactEntry.value as any || { kpay_no: "09-", kpay_name: "Admin", wave_no: "09-", wave_name: "Admin", tele_link: "#", kpay_img: "", wave_img: "" };
 
@@ -384,62 +403,21 @@ serve(async (req) => {
           ${loaderHTML}
           <div class="bg-[#4a3b32] text-white p-6 rounded-b-3xl shadow-lg text-center relative">
              <a href="/" onclick="showLoader()" class="absolute left-4 top-4 text-white/80 text-2xl"><i class="fas fa-arrow-left"></i></a>
-             <div class="w-20 h-20 mx-auto bg-white rounded-full flex items-center justify-center text-[#4a3b32] text-4xl font-bold border-4 border-white/20 mb-2">
-                <i class="fas fa-user"></i>
-             </div>
+             <div class="w-20 h-20 mx-auto bg-white rounded-full flex items-center justify-center text-[#4a3b32] text-4xl font-bold border-4 border-white/20 mb-2"><i class="fas fa-user"></i></div>
              <h1 class="text-xl font-bold uppercase">${currentUser}</h1>
              <p class="text-white/70 text-sm">${balance.toLocaleString()} Ks</p>
           </div>
-
           <div class="p-4 space-y-4">
-             <div class="bg-white p-4 rounded-xl shadow-sm">
-                <h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-lock text-yellow-500 mr-2"></i>Change Password</h3>
-                <form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2">
-                    <input type="password" name="new_password" placeholder="New Password" class="flex-1 border rounded p-2 text-sm" required>
-                    <button class="bg-[#4a3b32] text-white px-4 py-2 rounded text-sm font-bold">Save</button>
-                </form>
-             </div>
-
-             <div class="bg-white p-4 rounded-xl shadow-sm">
-                <h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin (ငွေဖြည့်ရန်)</h3>
-                <div class="grid grid-cols-2 gap-2">
-                    <div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100 relative overflow-hidden">
-                        <img src="${contact.kpay_img || 'https://img.icons8.com/color/48/k-pay.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full">
-                        <div class="text-xs text-gray-500 font-bold">KPay</div>
-                        <div class="text-sm font-bold text-blue-800 select-all">${contact.kpay_no}</div>
-                        <div class="text-[10px] text-gray-400">${contact.kpay_name}</div>
-                    </div>
-                    <div class="bg-yellow-50 p-3 rounded-lg text-center border border-yellow-100 relative overflow-hidden">
-                        <img src="${contact.wave_img || 'https://img.icons8.com/fluency/48/wave-money.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full">
-                        <div class="text-xs text-gray-500 font-bold">Wave</div>
-                        <div class="text-sm font-bold text-yellow-800 select-all">${contact.wave_no}</div>
-                        <div class="text-[10px] text-gray-400">${contact.wave_name}</div>
-                    </div>
-                    <a href="${contact.tele_link}" target="_blank" class="col-span-2 bg-blue-500 text-white p-3 rounded-lg text-center font-bold flex items-center justify-center gap-2 hover:bg-blue-600">
-                        <i class="fab fa-telegram text-2xl"></i> Contact on Telegram
-                    </a>
-                </div>
-             </div>
-
-             <div class="bg-white p-4 rounded-xl shadow-sm">
-                <h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-history text-green-500 mr-2"></i>Transaction History</h3>
-                <div class="space-y-2 h-60 overflow-y-auto history-scroll">
-                    ${transactions.length === 0 ? '<div class="text-center text-gray-400 text-xs py-4">No transactions yet</div>' : ''}
-                    ${transactions.map(tx => `
-                        <div class="flex justify-between items-center p-2 bg-gray-50 rounded border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}">
-                            <div><div class="text-sm font-bold text-gray-700">${tx.type}</div><div class="text-xs text-gray-400">${tx.time}</div></div>
-                            <div class="font-bold text-gray-700">+${tx.amount.toLocaleString()}</div>
-                        </div>`).join('')}
-                </div>
-             </div>
+             <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-lock text-yellow-500 mr-2"></i>Change Password</h3><form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2"><input type="password" name="new_password" placeholder="New Password" class="flex-1 border rounded p-2 text-sm" required><button class="bg-[#4a3b32] text-white px-4 py-2 rounded text-sm font-bold">Save</button></form></div>
+             <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin</h3><div class="grid grid-cols-2 gap-2">
+                <div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100 relative overflow-hidden"><img src="${contact.kpay_img || 'https://img.icons8.com/color/48/k-pay.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">KPay</div><div class="text-sm font-bold text-blue-800 select-all">${contact.kpay_no}</div><div class="text-[10px] text-gray-400">${contact.kpay_name}</div></div>
+                <div class="bg-yellow-50 p-3 rounded-lg text-center border border-yellow-100 relative overflow-hidden"><img src="${contact.wave_img || 'https://img.icons8.com/fluency/48/wave-money.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">Wave</div><div class="text-sm font-bold text-yellow-800 select-all">${contact.wave_no}</div><div class="text-[10px] text-gray-400">${contact.wave_name}</div></div>
+                <a href="${contact.tele_link}" target="_blank" class="col-span-2 bg-blue-500 text-white p-3 rounded-lg text-center font-bold flex items-center justify-center gap-2 hover:bg-blue-600"><i class="fab fa-telegram text-2xl"></i> Contact on Telegram</a>
+             </div></div>
+             <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-history text-green-500 mr-2"></i>Transaction History</h3><div class="space-y-2 h-60 overflow-y-auto history-scroll">${transactions.length === 0 ? '<div class="text-center text-gray-400 text-xs py-4">No transactions yet</div>' : ''}${transactions.map(tx => `<div class="flex justify-between items-center p-2 bg-gray-50 rounded border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}"><div><div class="text-sm font-bold text-gray-700">${tx.type}</div><div class="text-xs text-gray-400">${tx.time}</div></div><div class="font-bold text-gray-700">+${tx.amount.toLocaleString()}</div></div>`).join('')}</div></div>
           </div>
-          <script>
-             const p = new URLSearchParams(window.location.search);
-             if(p.get('status')==='pass_changed') Swal.fire('Success', 'Password Changed Successfully!', 'success');
-             if(p.get('status')==='error') Swal.fire('Error', 'Something went wrong', 'error');
-          </script>
-        </body></html>
-      `, { headers: { "content-type": "text/html; charset=utf-8" } });
+          <script>const p=new URLSearchParams(window.location.search);if(p.get('status')==='pass_changed')Swal.fire('Success','Password Changed Successfully!','success');if(p.get('status')==='error')Swal.fire('Error','Something went wrong','error');</script>
+        </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
   const bets = [];
@@ -452,16 +430,11 @@ serve(async (req) => {
   let blockedCount = 0;
   const blockedNumbers = [];
   const blockIter = kv.list({ prefix: ["blocks"] });
-  for await (const entry of blockIter) {
-      blockedCount++;
-      blockedNumbers.push(entry.key[1]);
-  }
+  for await (const entry of blockIter) { blockedCount++; blockedNumbers.push(entry.key[1]); }
   blockedNumbers.sort();
 
   const tipEntry = await kv.get(["system", "tip"]);
   const dailyTip = tipEntry.value || "";
-  
-  // Fetch Contact for Admin Form Pre-fill
   const contactEntry = await kv.get(["system", "contact"]);
   const contact = contactEntry.value as any || { kpay_no: "", kpay_name: "", wave_no: "", wave_name: "", tele_link: "", kpay_img: "", wave_img: "" };
 
@@ -474,10 +447,8 @@ serve(async (req) => {
       <nav class="bg-theme h-14 flex justify-between items-center px-4 text-white shadow-md sticky top-0 z-50">
         <a href="/profile" onclick="showLoader()" class="font-bold text-lg uppercase tracking-wider flex items-center gap-2"><i class="fas fa-user-circle text-2xl"></i> ${currentUser}</a>
         <div class="flex gap-4 items-center">
-           <div class="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full border border-white/20">
-             <i class="fas fa-wallet text-xs text-yellow-400"></i><span id="navBalance" class="text-sm font-bold">${balance.toLocaleString()} Ks</span>
-           </div>
-           <a href="/logout" onclick="showLoader()" class="text-xs border border-white/30 px-2 py-1 rounded hover:bg-white/10">Logout</a>
+           <div class="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full border border-white/20"><i class="fas fa-wallet text-xs text-yellow-400"></i><span id="navBalance" class="text-sm font-bold">${balance.toLocaleString()} Ks</span></div>
+           <a href="/logout" onclick="doLogout()" class="text-xs border border-white/30 px-2 py-1 rounded hover:bg-white/10">Logout</a>
         </div>
       </nav>
 
@@ -496,30 +467,18 @@ serve(async (req) => {
         <div class="px-4 mb-4 space-y-4">
            <div class="bg-white p-4 rounded shadow border-l-4 border-red-500">
              <h3 class="font-bold text-red-600 mb-2">Money & Payout</h3>
-             <form action="/admin/topup" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2">
-               <input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm"><input name="amount" placeholder="Amt" type="number" class="w-1/3 border rounded p-1 text-sm"><button class="bg-green-600 text-white w-1/3 rounded text-xs font-bold">Topup</button>
-             </form>
-             <form action="/admin/payout" method="POST" onsubmit="showLoader()" class="flex flex-col gap-2 border-t pt-2">
-                <div class="flex gap-2"><select name="session" class="w-1/3 border rounded p-1 bg-gray-50 text-xs font-bold"><option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option></select><input name="win_number" placeholder="Win No" class="w-1/3 border rounded p-1 text-center font-bold"><button class="bg-red-600 text-white w-1/3 rounded text-xs font-bold">PAYOUT</button></div>
-             </form>
+             <form action="/admin/topup" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2"><input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm"><input name="amount" placeholder="Amt" type="number" class="w-1/3 border rounded p-1 text-sm"><button class="bg-green-600 text-white w-1/3 rounded text-xs font-bold">Topup</button></form>
+             <form action="/admin/payout" method="POST" onsubmit="showLoader()" class="flex flex-col gap-2 border-t pt-2"><div class="flex gap-2"><select name="session" class="w-1/3 border rounded p-1 bg-gray-50 text-xs font-bold"><option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option></select><input name="win_number" placeholder="Win No" class="w-1/3 border rounded p-1 text-center font-bold"><button class="bg-red-600 text-white w-1/3 rounded text-xs font-bold">PAYOUT</button></div></form>
            </div>
-           
            <div class="bg-white p-4 rounded shadow border-l-4 border-green-500">
-             <h3 class="font-bold text-green-600 mb-2">Payment Settings (ငွေလက်ခံ)</h3>
+             <h3 class="font-bold text-green-600 mb-2">Payment Settings</h3>
              <form action="/admin/contact" method="POST" onsubmit="showLoader()" class="grid grid-cols-2 gap-2">
-                <input name="kpay_no" value="${contact.kpay_no}" placeholder="KPay No" class="border rounded p-1 text-sm">
-                <input name="kpay_name" value="${contact.kpay_name}" placeholder="KPay Name" class="border rounded p-1 text-sm">
-                <input name="kpay_img" value="${contact.kpay_img}" placeholder="KPay Img URL (Optional)" class="col-span-2 border rounded p-1 text-sm">
-                
-                <input name="wave_no" value="${contact.wave_no}" placeholder="Wave No" class="border rounded p-1 text-sm">
-                <input name="wave_name" value="${contact.wave_name}" placeholder="Wave Name" class="border rounded p-1 text-sm">
-                <input name="wave_img" value="${contact.wave_img}" placeholder="Wave Img URL (Optional)" class="col-span-2 border rounded p-1 text-sm">
-                
+                <input name="kpay_no" value="${contact.kpay_no}" placeholder="KPay No" class="border rounded p-1 text-sm"><input name="kpay_name" value="${contact.kpay_name}" placeholder="KPay Name" class="border rounded p-1 text-sm"><input name="kpay_img" value="${contact.kpay_img}" placeholder="KPay Img URL" class="col-span-2 border rounded p-1 text-sm">
+                <input name="wave_no" value="${contact.wave_no}" placeholder="Wave No" class="border rounded p-1 text-sm"><input name="wave_name" value="${contact.wave_name}" placeholder="Wave Name" class="border rounded p-1 text-sm"><input name="wave_img" value="${contact.wave_img}" placeholder="Wave Img URL" class="col-span-2 border rounded p-1 text-sm">
                 <input name="tele_link" value="${contact.tele_link}" placeholder="Telegram Link" class="col-span-2 border rounded p-1 text-sm">
                 <button class="col-span-2 bg-green-600 text-white rounded py-1 text-xs font-bold">UPDATE INFO</button>
              </form>
            </div>
-
            <div class="bg-white p-4 rounded shadow border-l-4 border-blue-500">
              <h3 class="font-bold text-blue-600 mb-2">Lucky Tip</h3>
              <form action="/admin/tip" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="tip" placeholder="Tip text" class="flex-1 border rounded p-1 text-sm" value="${dailyTip}"><button class="bg-blue-600 text-white px-3 rounded text-xs font-bold">UPDATE</button></form>
@@ -568,6 +527,9 @@ serve(async (req) => {
         function showVoucher(v) { const html = \`<div class="voucher-container"><div class="stamp">PAID</div><div class="voucher-header"><h2 class="text-xl font-bold">Myanmar 2D Voucher</h2><div class="text-xs text-gray-500">ID: \${v.id}</div><div class="text-sm mt-1">User: <b>\${v.user}</b></div><div class="text-xs text-gray-400">\${v.date} \${v.time}</div></div><div class="voucher-body">\${v.numbers.map(n => \`<div class="voucher-row"><span>\${n}</span><span>\${v.amountPerNum}</span></div>\`).join('')}</div><div class="voucher-total"><span>TOTAL</span><span>\${v.total} Ks</span></div></div>\`; document.getElementById('voucherContent').innerHTML = html; document.getElementById('voucherModal').classList.remove('hidden'); }
         const API_URL = "https://api.thaistock2d.com/live";
         async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); if(data.live) { document.getElementById('live_twod').innerText = data.live.twod || "--"; document.getElementById('live_date').innerText = data.live.date || "Today"; document.getElementById('live_time').innerText = data.live.time || "--:--:--"; } if (data.result) { if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } const ev = data.result[3] || data.result[2]; if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } } } catch (e) {} } setInterval(updateData, 2000); updateData();
+        
+        // LOGOUT LOGIC
+        function doLogout() { sessionStorage.removeItem('splash_shown'); showLoader(); }
       </script>
     </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
 });
