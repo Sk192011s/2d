@@ -54,9 +54,28 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. BETTING LOGIC
+  // 2. BETTING LOGIC (With Time Lock)
   // =========================
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
+    // --- TIME CHECK LOGIC ---
+    const now = new Date();
+    const mmTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
+    const hour = mmTime.getHours();
+    const minute = mmTime.getMinutes();
+    const totalMins = hour * 60 + minute;
+
+    // 11:50 AM = 710 mins, 12:15 PM = 735 mins (Morning Break)
+    const isMorningClose = totalMins >= 710 && totalMins < 735;
+    
+    // 3:50 PM = 950 mins, 8:00 AM = 480 mins (Evening Close)
+    // Close if time is >= 15:50 OR time < 08:00
+    const isEveningClose = totalMins >= 950 || totalMins < 480;
+
+    if (isMorningClose || isEveningClose) {
+        return Response.redirect(url.origin + "/?status=market_closed");
+    }
+    // -------------------------
+
     const form = await req.formData();
     const numbersRaw = form.get("number")?.toString() || ""; 
     const amount = parseInt(form.get("amount")?.toString() || "0");
@@ -76,8 +95,8 @@ serve(async (req) => {
 
     await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
     
-    // Myanmar TimeZone
-    const mmTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: true });
+    // Record Time String
+    const timeString = mmTime.toLocaleString("en-US", { hour: 'numeric', minute: 'numeric', hour12: true });
 
     for (const num of numberList) {
         const betId = Date.now().toString() + Math.random().toString().substr(2, 5);
@@ -86,7 +105,7 @@ serve(async (req) => {
             number: num.trim(), 
             amount, 
             status: "PENDING", 
-            time: mmTime 
+            time: timeString 
         });
     }
 
@@ -149,7 +168,6 @@ serve(async (req) => {
         .tab-active { background-color: #4a3b32; color: white; }
         .tab-inactive { background-color: #eee; color: #666; }
         
-        /* APP LOADER */
         #app-loader {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.85); z-index: 9999;
@@ -163,8 +181,7 @@ serve(async (req) => {
         }
         @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .hidden-loader { opacity: 0; pointer-events: none; }
-
-        /* CUSTOM SCROLLBAR FOR HISTORY */
+        
         .history-scroll::-webkit-scrollbar { width: 4px; }
         .history-scroll::-webkit-scrollbar-track { background: #f1f1f1; }
         .history-scroll::-webkit-scrollbar-thumb { background: #888; border-radius: 2px; }
@@ -183,7 +200,6 @@ serve(async (req) => {
 
   const loaderHTML = `<div id="app-loader"><div class="spinner"></div></div>`;
 
-  // LOGIN PAGE
   if (!currentUser) {
     return new Response(`
       <!DOCTYPE html>
@@ -247,7 +263,6 @@ serve(async (req) => {
   const userEntry = await kv.get(["users", currentUser]);
   const balance = (userEntry.value as any)?.balance || 0;
 
-  // Limit History to 50
   const bets = [];
   const iter = kv.list({ prefix: ["bets"] }, { reverse: true, limit: 50 });
   for await (const entry of iter) {
@@ -406,6 +421,10 @@ serve(async (req) => {
 
         if(status === 'insufficient_balance') {
            Swal.fire({ icon: 'error', title: 'Insufficient Balance', text: 'Please top up.', confirmButtonColor: '#4a3b32' });
+           window.history.replaceState({}, document.title, "/");
+        }
+        if(status === 'market_closed') {
+           Swal.fire({ icon: 'warning', title: 'Market Closed', text: 'Betting is currently closed.', confirmButtonColor: '#d97736' });
            window.history.replaceState({}, document.title, "/");
         }
         if(status === 'success') {
