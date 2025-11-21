@@ -2,50 +2,63 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
 const kv = await Deno.openKv();
 
-// --- CRON JOB ---
-Deno.cron("Save History", "*/10 * * * *", async () => {
+// --- CRON JOB: AUTO SAVE 2D RESULTS ---
+// Runs every 10 minutes to snatch results from API
+Deno.cron("Save 2D History", "*/10 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
     const data = await res.json();
+    
+    // Get Myanmar Date String (YYYY-MM-DD)
     const now = new Date();
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
-    const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
-    
-    const day = mmDate.getDay();
-    if (day === 0 || day === 6) return; 
+    const dateKey = mmDate.getFullYear() + "-" + 
+                    String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + 
+                    String(mmDate.getDate()).padStart(2, '0');
 
+    // Check if weekend (Sat=6, Sun=0) - usually no 2D, but we check API data anyway
+    
     let morning = "--";
     let evening = "--";
 
     if (data.result) {
+        // Usually Index 1 is Morning, Index 3 (or 2) is Evening
         if (data.result[1] && data.result[1].twod) morning = data.result[1].twod;
+        
         const ev = data.result[3] || data.result[2];
         if (ev && ev.twod) evening = ev.twod;
     }
 
+    // Only save if we have at least one result
     if (morning !== "--" || evening !== "--") {
+        // Get existing to avoid overwriting with "--" if API resets early
         const existing = await kv.get(["history", dateKey]);
         const oldVal = existing.value as any || { morning: "--", evening: "--" };
-        await kv.set(["history", dateKey], {
+        
+        const newVal = {
             morning: morning !== "--" ? morning : oldVal.morning,
             evening: evening !== "--" ? evening : oldVal.evening,
             date: dateKey
-        });
+        };
+        
+        await kv.set(["history", dateKey], newVal);
     }
-  } catch (e) { console.error(e); }
+  } catch (e) {
+    console.error("Auto-save failed:", e);
+  }
 });
 
 serve(async (req) => {
   const url = new URL(req.url);
   
   // =========================
-  // 1. AUTH (FIXED FOR MYANMAR FONT)
+  // 1. AUTH
   // =========================
   const cookieOptions = "; Path=/; HttpOnly; Max-Age=1296000"; 
 
   if (req.method === "POST" && url.pathname === "/register") {
     const form = await req.formData();
-    const username = form.get("username")?.toString().trim(); // Removed toLowerCase for Myanmar names
+    const username = form.get("username")?.toString();
     const password = form.get("password")?.toString();
 
     if (!username || !password) return Response.redirect(url.origin + "/?error=missing_fields");
@@ -56,14 +69,13 @@ serve(async (req) => {
     await kv.set(["users", username], { password, balance: 0 });
     
     const headers = new Headers({ "Location": "/" });
-    // FIX: Encode URI Component for Myanmar Characters
-    headers.set("Set-Cookie", `user=${encodeURIComponent(username)}${cookieOptions}`);
+    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
     return new Response(null, { status: 303, headers });
   }
 
   if (req.method === "POST" && url.pathname === "/login") {
     const form = await req.formData();
-    const username = form.get("username")?.toString().trim();
+    const username = form.get("username")?.toString();
     const password = form.get("password")?.toString();
 
     const userEntry = await kv.get(["users", username]);
@@ -74,8 +86,7 @@ serve(async (req) => {
     }
 
     const headers = new Headers({ "Location": "/" });
-    // FIX: Encode URI Component
-    headers.set("Set-Cookie", `user=${encodeURIComponent(username)}${cookieOptions}`);
+    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
     return new Response(null, { status: 303, headers });
   }
 
@@ -87,12 +98,11 @@ serve(async (req) => {
 
   const cookies = req.headers.get("Cookie") || "";
   const userCookie = cookies.split(";").find(c => c.trim().startsWith("user="));
-  // FIX: Decode URI Component to read Myanmar names
-  const currentUser = userCookie ? decodeURIComponent(userCookie.split("=")[1].trim()) : null;
+  const currentUser = userCookie ? userCookie.split("=")[1].trim() : null;
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. PROFILE & ACTIONS
+  // 2. PROFILE & DATA
   // =========================
   if (req.method === "POST" && url.pathname === "/update_avatar" && currentUser) {
       const form = await req.formData();
@@ -119,7 +129,22 @@ serve(async (req) => {
   }
 
   // =========================
-  // 3. BETTING LOGIC
+  // 3. ADMIN MANUAL HISTORY
+  // =========================
+  if (isAdmin && req.method === "POST" && url.pathname === "/admin/add_history") {
+      const form = await req.formData();
+      const date = form.get("date")?.toString(); // YYYY-MM-DD
+      const morning = form.get("morning")?.toString() || "--";
+      const evening = form.get("evening")?.toString() || "--";
+      
+      if (date) {
+          await kv.set(["history", date], { morning, evening, date });
+      }
+      return new Response(null, { status: 303, headers: { "Location": "/profile" } }); // Redirect back to profile/admin
+  }
+
+  // =========================
+  // 4. BETTING LOGIC
   // =========================
   if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
       const iter = kv.list({ prefix: ["bets"] });
@@ -144,20 +169,26 @@ serve(async (req) => {
     const isMorningClose = totalMins >= 710 && totalMins < 735; 
     const isEveningClose = totalMins >= 950 || totalMins < 480; 
 
-    if (isMorningClose || isEveningClose) return new Response(JSON.stringify({ status: "market_closed" }), { headers: { "content-type": "application/json" } });
+    if (isMorningClose || isEveningClose) {
+        return new Response(JSON.stringify({ status: "market_closed" }), { headers: { "content-type": "application/json" } });
+    }
 
     const form = await req.formData();
     const numbersRaw = form.get("number")?.toString() || ""; 
     const amount = parseInt(form.get("amount")?.toString() || "0");
     
     if(!numbersRaw || amount <= 0) return new Response(JSON.stringify({ status: "invalid_bet" }), { headers: { "content-type": "application/json" } });
+
     if (amount < 50) return new Response(JSON.stringify({ status: "error_min" }), { headers: { "content-type": "application/json" } });
     if (amount > 100000) return new Response(JSON.stringify({ status: "error_max" }), { headers: { "content-type": "application/json" } });
 
     const numberList = numbersRaw.split(",").filter(n => n.trim() !== "");
+    
     for (const num of numberList) {
         const isBlocked = await kv.get(["blocks", num.trim()]);
-        if (isBlocked.value) return new Response(JSON.stringify({ status: "blocked", num: num.trim() }), { headers: { "content-type": "application/json" } });
+        if (isBlocked.value) {
+            return new Response(JSON.stringify({ status: "blocked", num: num.trim() }), { headers: { "content-type": "application/json" } });
+        }
     }
 
     const totalCost = numberList.length * amount;
@@ -165,7 +196,9 @@ serve(async (req) => {
     const userData = userEntry.value as any;
     const currentBalance = userData?.balance || 0;
 
-    if (currentBalance < totalCost) return new Response(JSON.stringify({ status: "insufficient_balance" }), { headers: { "content-type": "application/json" } });
+    if (currentBalance < totalCost) {
+        return new Response(JSON.stringify({ status: "insufficient_balance" }), { headers: { "content-type": "application/json" } });
+    }
 
     await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
     
@@ -174,29 +207,46 @@ serve(async (req) => {
 
     for (const num of numberList) {
         const betId = Date.now().toString() + Math.random().toString().substr(2, 5);
-        await kv.set(["bets", betId], { user: currentUser, number: num.trim(), amount, status: "PENDING", time: timeString, rawMins: totalMins });
+        await kv.set(["bets", betId], { 
+            user: currentUser, 
+            number: num.trim(), 
+            amount, 
+            status: "PENDING", 
+            time: timeString,
+            rawMins: totalMins
+        });
     }
 
     return new Response(JSON.stringify({ 
         status: "success",
-        voucher: { user: currentUser, date: dateString, time: timeString, numbers: numberList, amountPerNum: amount, total: totalCost, id: Date.now().toString().slice(-6) }
+        voucher: {
+            user: currentUser,
+            date: dateString,
+            time: timeString,
+            numbers: numberList,
+            amountPerNum: amount,
+            total: totalCost,
+            id: Date.now().toString().slice(-6)
+        }
     }), { headers: { "content-type": "application/json" } });
   }
 
   // =========================
-  // 4. ADMIN LOGIC
+  // 5. ADMIN LOGIC
   // =========================
   if (isAdmin && req.method === "POST") {
     if (url.pathname === "/admin/topup") {
       const form = await req.formData();
-      const targetUser = form.get("username")?.toString().trim();
+      const targetUser = form.get("username")?.toString();
       const amount = parseInt(form.get("amount")?.toString() || "0");
       if(targetUser) {
         const userEntry = await kv.get(["users", targetUser]);
         const userData = userEntry.value as any;
         if(userData) {
             await kv.set(["users", targetUser], { ...userData, balance: (userData.balance || 0) + amount });
-            await kv.set(["transactions", Date.now().toString()], { user: targetUser, amount: amount, type: "TOPUP", time: new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" }) });
+            await kv.set(["transactions", Date.now().toString()], {
+                user: targetUser, amount: amount, type: "TOPUP", time: new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" })
+            });
         }
       }
       return new Response(null, { status: 303, headers: { "Location": "/" } });
@@ -204,7 +254,7 @@ serve(async (req) => {
     
     if (url.pathname === "/admin/reset_pass") {
         const form = await req.formData();
-        const targetUser = form.get("username")?.toString().trim();
+        const targetUser = form.get("username")?.toString();
         const newPass = form.get("password")?.toString();
         if (targetUser && newPass) {
             const userEntry = await kv.get(["users", targetUser]);
@@ -217,8 +267,12 @@ serve(async (req) => {
     if (url.pathname === "/admin/contact") {
         const form = await req.formData();
         const contactData = {
-            kpay_name: form.get("kpay_name") || "Admin", kpay_no: form.get("kpay_no") || "09-", kpay_img: form.get("kpay_img") || "",
-            wave_name: form.get("wave_name") || "Admin", wave_no: form.get("wave_no") || "09-", wave_img: form.get("wave_img") || "",
+            kpay_name: form.get("kpay_name") || "Admin",
+            kpay_no: form.get("kpay_no") || "09-",
+            kpay_img: form.get("kpay_img") || "",
+            wave_name: form.get("wave_name") || "Admin",
+            wave_no: form.get("wave_no") || "09-",
+            wave_img: form.get("wave_img") || "",
             tele_link: form.get("tele_link") || "#"
         };
         await kv.set(["system", "contact"], contactData);
@@ -295,19 +349,10 @@ serve(async (req) => {
         await kv.set(["system", "tip"], tip);
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
-    
-    if (url.pathname === "/admin/add_history") {
-      const form = await req.formData();
-      const date = form.get("date")?.toString(); 
-      const morning = form.get("morning")?.toString() || "--";
-      const evening = form.get("evening")?.toString() || "--";
-      if (date) await kv.set(["history", date], { morning, evening, date });
-      return new Response(null, { status: 303, headers: { "Location": "/" } });
-    }
   }
 
   // =========================
-  // 5. UI RENDERING
+  // 6. UI RENDERING
   // =========================
   const commonHead = `
     <meta charset="UTF-8">
@@ -347,28 +392,8 @@ serve(async (req) => {
         .text-shadow { text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
     </style>
     <script>
-        // FIX: Aggressively hide loader on any page show (fix for back button)
-        window.addEventListener('pageshow', () => {
-             const l = document.getElementById('app-loader');
-             if(l) l.classList.add('hidden-loader');
-        });
-        
-        window.addEventListener('load', () => { 
-            const l = document.getElementById('app-loader'); 
-            if(l) {
-                l.classList.add('hidden-loader'); 
-                // FAILSAFE
-                setTimeout(() => l.style.display = 'none', 5000);
-            }
-            const s = document.getElementById('splash-screen'); 
-            if(s) { 
-                if(sessionStorage.getItem('splash_shown')){ s.style.display='none'; } 
-                else { 
-                    setTimeout(()=>{s.style.opacity='0'; setTimeout(()=>{s.style.display='none'; sessionStorage.setItem('splash_shown','true');},700);},1500); 
-                } 
-            } 
-        });
-        function showLoader() { const l = document.getElementById('app-loader'); if(l) { l.style.display='flex'; l.classList.remove('hidden-loader'); } }
+        window.addEventListener('load', () => { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); setTimeout(() => { const s = document.getElementById('splash-screen'); if(s) { if(sessionStorage.getItem('splash_shown')){ s.style.display='none'; } else { setTimeout(()=>{s.style.opacity='0'; setTimeout(()=>{s.style.display='none'; sessionStorage.setItem('splash_shown','true');},700);},1500); } } }, 100); });
+        function showLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.remove('hidden-loader'); }
         function hideLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); }
         function doLogout() { sessionStorage.removeItem('splash_shown'); showLoader(); }
     </script>
@@ -377,7 +402,40 @@ serve(async (req) => {
   const splashHTML = `<div id="splash-screen"><img src="https://img.icons8.com/color/144/shop.png" class="splash-logo"><h1 class="text-3xl font-bold text-white tracking-[5px] mb-6">MYANMAR 2D</h1><div class="loading-bar"><div class="loading-progress"></div></div><p class="text-xs text-white/50 mt-4 uppercase tracking-wider">Loading System...</p></div>`;
 
   if (!currentUser) {
-    return new Response(`<!DOCTYPE html><html lang="en"><head><title>Welcome</title>${commonHead}</head><body class="h-screen flex items-center justify-center px-4 bg-[#4a3b32]">${splashHTML} ${loaderHTML}<div class="bg-white text-gray-800 p-6 rounded-xl w-full max-w-sm shadow-2xl text-center"><img src="https://img.icons8.com/color/96/shop.png" class="mx-auto mb-4 w-16"><h1 class="text-2xl font-bold mb-6 text-[#4a3b32]">Myanmar 2D Live</h1><div class="flex justify-center mb-6 border-b"><button onclick="showLogin()" id="tabLogin" class="w-1/2 pb-2 border-b-2 border-[#4a3b32] font-bold text-[#4a3b32]">Login</button><button onclick="showRegister()" id="tabReg" class="w-1/2 pb-2 text-gray-400">Register</button></div><form id="loginForm" action="/login" method="POST" onsubmit="showLoader()"><input type="text" name="username" placeholder="Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required><input type="password" name="password" placeholder="Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required><label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer"><input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)</label><button class="bg-[#4a3b32] text-white font-bold w-full py-3 rounded-lg hover:bg-[#3d3029]">Login</button></form><form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoader()"><input type="text" name="username" placeholder="New Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required><input type="password" name="password" placeholder="New Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required><label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer"><input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)</label><button class="bg-[#d97736] text-white font-bold w-full py-3 rounded-lg hover:bg-[#b5602b]">Create Account</button></form></div><script>const p=new URLSearchParams(window.location.search);if(p.get('error')==='invalid_login') Swal.fire('Error','Invalid Username or Password','error');if(p.get('error')==='user_exists') Swal.fire('Error','Username already taken','error');function showLogin(){document.getElementById('loginForm').classList.remove('hidden');document.getElementById('regForm').classList.add('hidden');document.getElementById('tabLogin').classList.add('border-b-2','border-[#4a3b32]','text-[#4a3b32]');document.getElementById('tabLogin').classList.remove('text-gray-400');document.getElementById('tabReg').classList.remove('border-b-2','border-[#4a3b32]','text-[#4a3b32]');document.getElementById('tabReg').classList.add('text-gray-400');}function showRegister(){document.getElementById('loginForm').classList.add('hidden');document.getElementById('regForm').classList.remove('hidden');document.getElementById('tabReg').classList.add('border-b-2','border-[#4a3b32]','text-[#4a3b32]');document.getElementById('tabReg').classList.remove('text-gray-400');document.getElementById('tabLogin').classList.remove('border-b-2','border-[#4a3b32]','text-[#4a3b32]');document.getElementById('tabLogin').classList.add('text-gray-400');}</script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+    return new Response(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head><title>Welcome</title>${commonHead}</head>
+      <body class="h-screen flex items-center justify-center px-4 bg-[#4a3b32]">
+        ${splashHTML} ${loaderHTML}
+        <div class="bg-white text-gray-800 p-6 rounded-xl w-full max-w-sm shadow-2xl text-center">
+          <img src="https://img.icons8.com/color/96/shop.png" class="mx-auto mb-4 w-16">
+          <h1 class="text-2xl font-bold mb-6 text-[#4a3b32]">Myanmar 2D Live</h1>
+          <div class="flex justify-center mb-6 border-b">
+            <button onclick="showLogin()" id="tabLogin" class="w-1/2 pb-2 border-b-2 border-[#4a3b32] font-bold text-[#4a3b32]">Login</button>
+            <button onclick="showRegister()" id="tabReg" class="w-1/2 pb-2 text-gray-400">Register</button>
+          </div>
+          <form id="loginForm" action="/login" method="POST" onsubmit="showLoader()">
+            <input type="text" name="username" placeholder="Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
+            <input type="password" name="password" placeholder="Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
+            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer"><input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)</label>
+            <button class="bg-[#4a3b32] text-white font-bold w-full py-3 rounded-lg hover:bg-[#3d3029]">Login</button>
+          </form>
+          <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoader()">
+            <input type="text" name="username" placeholder="New Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
+            <input type="password" name="password" placeholder="New Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
+            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer"><input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)</label>
+            <button class="bg-[#d97736] text-white font-bold w-full py-3 rounded-lg hover:bg-[#b5602b]">Create Account</button>
+          </form>
+        </div>
+        <script>
+          const p = new URLSearchParams(window.location.search);
+          if(p.get('error')==='invalid_login') Swal.fire('Error','Invalid Username or Password','error');
+          if(p.get('error')==='user_exists') Swal.fire('Error','Username already taken','error');
+          function showLogin(){ document.getElementById('loginForm').classList.remove('hidden'); document.getElementById('regForm').classList.add('hidden'); document.getElementById('tabLogin').classList.add('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabLogin').classList.remove('text-gray-400'); document.getElementById('tabReg').classList.remove('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabReg').classList.add('text-gray-400'); }
+          function showRegister(){ document.getElementById('loginForm').classList.add('hidden'); document.getElementById('regForm').classList.remove('hidden'); document.getElementById('tabReg').classList.add('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabReg').classList.remove('text-gray-400'); document.getElementById('tabLogin').classList.remove('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabLogin').classList.add('text-gray-400'); }
+        </script>
+      </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
   const userEntry = await kv.get(["users", currentUser]);
@@ -395,7 +453,82 @@ serve(async (req) => {
       const contactEntry = await kv.get(["system", "contact"]);
       const contact = contactEntry.value as any || { kpay_no: "09-", kpay_name: "Admin", wave_no: "09-", wave_name: "Admin", tele_link: "#", kpay_img: "", wave_img: "" };
 
-      return new Response(`<!DOCTYPE html><html lang="en"><head><title>Profile</title>${commonHead}</head><body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">${loaderHTML}<div class="bg-[#4a3b32] text-white p-6 rounded-b-3xl shadow-lg text-center relative"><a href="/" onclick="showLoader()" class="absolute left-4 top-4 text-white/80 text-2xl"><i class="fas fa-arrow-left"></i></a><div class="relative w-24 h-24 mx-auto mb-3"><div class="w-24 h-24 rounded-full border-4 border-white/20 bg-white overflow-hidden flex items-center justify-center relative">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-[#4a3b32]"></i>`}</div><button onclick="document.getElementById('pInput').click()" class="absolute bottom-0 right-0 bg-yellow-500 text-white rounded-full p-2 shadow-lg border-2 border-[#4a3b32]"><i class="fas fa-camera text-xs"></i></button><input type="file" id="pInput" hidden accept="image/*" onchange="uploadAvatar(this)"></div><h1 class="text-xl font-bold uppercase">${currentUser}</h1><p class="text-white/70 text-sm">${balance.toLocaleString()} Ks</p></div><div class="p-4 space-y-4"><div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-lock text-yellow-500 mr-2"></i>Change Password</h3><form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2"><input type="password" name="new_password" placeholder="New Password" class="flex-1 border rounded p-2 text-sm" required><button class="bg-[#4a3b32] text-white px-4 py-2 rounded text-sm font-bold">Save</button></form></div><div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100 relative overflow-hidden"><img src="${contact.kpay_img || 'https://img.icons8.com/color/48/k-pay.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">KPay</div><div class="text-sm font-bold text-blue-800 select-all">${contact.kpay_no}</div><div class="text-[10px] text-gray-400">${contact.kpay_name}</div></div><div class="bg-yellow-50 p-3 rounded-lg text-center border border-yellow-100 relative overflow-hidden"><img src="${contact.wave_img || 'https://img.icons8.com/fluency/48/wave-money.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">Wave</div><div class="text-sm font-bold text-yellow-800 select-all">${contact.wave_no}</div><div class="text-[10px] text-gray-400">${contact.wave_name}</div></div><a href="${contact.tele_link}" target="_blank" class="col-span-2 bg-blue-500 text-white p-3 rounded-lg text-center font-bold flex items-center justify-center gap-2 hover:bg-blue-600"><i class="fab fa-telegram text-2xl"></i> Contact on Telegram</a></div></div><div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-history text-green-500 mr-2"></i>Transaction History</h3><div class="space-y-2 h-60 overflow-y-auto history-scroll">${transactions.length === 0 ? '<div class="text-center text-gray-400 text-xs py-4">No transactions yet</div>' : ''}${transactions.map(tx => `<div class="flex justify-between items-center p-2 bg-gray-50 rounded border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}"><div><div class="text-sm font-bold text-gray-700">${tx.type}</div><div class="text-xs text-gray-400">${tx.time}</div></div><div class="font-bold text-gray-700">+${tx.amount.toLocaleString()}</div></div>`).join('')}</div></div></div><script>const p=new URLSearchParams(window.location.search);if(p.get('status')==='pass_changed')Swal.fire('Success','Password Changed Successfully!','success');if(p.get('status')==='error')Swal.fire('Error','Something went wrong','error'); function uploadAvatar(input) { if(input.files && input.files[0]) { const file = input.files[0]; const reader = new FileReader(); reader.onload = function(e) { const img = new Image(); img.src = e.target.result; img.onload = function() { const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d'); const size = 150; canvas.width = size; canvas.height = size; let sSize = Math.min(img.width, img.height); let sx = (img.width - sSize) / 2; let sy = (img.height - sSize) / 2; ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size); const dataUrl = canvas.toDataURL('image/jpeg', 0.7); const fd = new FormData(); fd.append('avatar', dataUrl); showLoader(); fetch('/update_avatar', { method: 'POST', body: fd }).then(res => res.json()).then(d => { hideLoader(); if(d.status==='success') location.reload(); else Swal.fire('Error', 'Upload failed', 'error'); }); } }; reader.readAsDataURL(file); } } </script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+      return new Response(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head><title>Profile</title>${commonHead}</head>
+        <body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">
+          ${loaderHTML}
+          <div class="bg-[#4a3b32] text-white p-6 rounded-b-3xl shadow-lg text-center relative">
+             <a href="/" onclick="showLoader()" class="absolute left-4 top-4 text-white/80 text-2xl"><i class="fas fa-arrow-left"></i></a>
+             <div class="relative w-24 h-24 mx-auto mb-3">
+                 <div class="w-24 h-24 rounded-full border-4 border-white/20 bg-white overflow-hidden flex items-center justify-center relative">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-[#4a3b32]"></i>`}</div>
+                 <button onclick="document.getElementById('pInput').click()" class="absolute bottom-0 right-0 bg-yellow-500 text-white rounded-full p-2 shadow-lg border-2 border-[#4a3b32]"><i class="fas fa-camera text-xs"></i></button>
+                 <input type="file" id="pInput" hidden accept="image/*" onchange="uploadAvatar(this)">
+             </div>
+             <h1 class="text-xl font-bold uppercase">${currentUser}</h1>
+             <p class="text-white/70 text-sm">${balance.toLocaleString()} Ks</p>
+          </div>
+          <div class="p-4 space-y-4">
+             
+             ${isAdmin ? `
+             <div class="bg-white p-4 rounded-xl shadow-sm border-l-4 border-purple-500">
+                <h3 class="font-bold text-purple-600 mb-3"><i class="fas fa-calendar-plus mr-2"></i>Add Past History</h3>
+                <form action="/admin/add_history" method="POST" onsubmit="showLoader()" class="space-y-2">
+                    <input name="date" type="date" class="w-full border rounded p-2 text-sm" required>
+                    <div class="flex gap-2">
+                        <input name="morning" placeholder="12:01 (e.g 41)" class="w-1/2 border rounded p-2 text-center">
+                        <input name="evening" placeholder="4:30 (e.g 92)" class="w-1/2 border rounded p-2 text-center">
+                    </div>
+                    <button class="bg-purple-600 text-white w-full py-2 rounded font-bold text-xs">SAVE RECORD</button>
+                </form>
+             </div>` : ''}
+
+             <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-lock text-yellow-500 mr-2"></i>Change Password</h3><form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2"><input type="password" name="new_password" placeholder="New Password" class="flex-1 border rounded p-2 text-sm" required><button class="bg-[#4a3b32] text-white px-4 py-2 rounded text-sm font-bold">Save</button></form></div>
+             <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin</h3><div class="grid grid-cols-2 gap-2">
+                <div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100 relative overflow-hidden"><img src="${contact.kpay_img || 'https://img.icons8.com/color/48/k-pay.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">KPay</div><div class="text-sm font-bold text-blue-800 select-all">${contact.kpay_no}</div><div class="text-[10px] text-gray-400">${contact.kpay_name}</div></div>
+                <div class="bg-yellow-50 p-3 rounded-lg text-center border border-yellow-100 relative overflow-hidden"><img src="${contact.wave_img || 'https://img.icons8.com/fluency/48/wave-money.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">Wave</div><div class="text-sm font-bold text-yellow-800 select-all">${contact.wave_no}</div><div class="text-[10px] text-gray-400">${contact.wave_name}</div></div>
+                <a href="${contact.tele_link}" target="_blank" class="col-span-2 bg-blue-500 text-white p-3 rounded-lg text-center font-bold flex items-center justify-center gap-2 hover:bg-blue-600"><i class="fab fa-telegram text-2xl"></i> Contact on Telegram</a>
+             </div></div>
+             <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-history text-green-500 mr-2"></i>Transaction History</h3><div class="space-y-2 h-60 overflow-y-auto history-scroll">${transactions.length === 0 ? '<div class="text-center text-gray-400 text-xs py-4">No transactions yet</div>' : ''}${transactions.map(tx => `<div class="flex justify-between items-center p-2 bg-gray-50 rounded border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}"><div><div class="text-sm font-bold text-gray-700">${tx.type}</div><div class="text-xs text-gray-400">${tx.time}</div></div><div class="font-bold text-gray-700">+${tx.amount.toLocaleString()}</div></div>`).join('')}</div></div>
+          </div>
+          <script>const p=new URLSearchParams(window.location.search);if(p.get('status')==='pass_changed')Swal.fire('Success','Password Changed Successfully!','success');if(p.get('status')==='error')Swal.fire('Error','Something went wrong','error'); function uploadAvatar(input) { if(input.files && input.files[0]) { const file = input.files[0]; const reader = new FileReader(); reader.onload = function(e) { const img = new Image(); img.src = e.target.result; img.onload = function() { const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d'); const size = 150; canvas.width = size; canvas.height = size; let sSize = Math.min(img.width, img.height); let sx = (img.width - sSize) / 2; let sy = (img.height - sSize) / 2; ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size); const dataUrl = canvas.toDataURL('image/jpeg', 0.7); const fd = new FormData(); fd.append('avatar', dataUrl); showLoader(); fetch('/update_avatar', { method: 'POST', body: fd }).then(res => res.json()).then(d => { hideLoader(); if(d.status==='success') location.reload(); else Swal.fire('Error', 'Upload failed', 'error'); }); } }; reader.readAsDataURL(file); } } </script>
+        </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
+  // HISTORY PAGE
+  if (url.pathname === "/history") {
+      const historyList = [];
+      const hIter = kv.list({ prefix: ["history"] }, { reverse: true });
+      for await (const entry of hIter) {
+          historyList.push(entry.value);
+      }
+
+      return new Response(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head><title>History</title>${commonHead}</head>
+        <body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">
+          ${loaderHTML}
+          <div class="bg-[#4a3b32] text-white p-4 shadow-lg flex items-center gap-4 sticky top-0 z-50">
+             <a href="/" onclick="showLoader()" class="text-2xl"><i class="fas fa-arrow-left"></i></a>
+             <h1 class="text-xl font-bold">2D History</h1>
+          </div>
+          <div class="p-4 space-y-2">
+             <div class="grid grid-cols-3 bg-gray-200 p-2 rounded font-bold text-center text-xs text-gray-600">
+                <div>Date</div><div>12:01 PM</div><div>04:30 PM</div>
+             </div>
+             ${historyList.length === 0 ? '<div class="text-center p-4 text-gray-400">No history yet</div>' : ''}
+             ${historyList.map((h: any) => `
+                <div class="grid grid-cols-3 bg-white p-3 rounded shadow-sm text-center items-center border-b">
+                    <div class="text-xs font-bold text-gray-500">${h.date}</div>
+                    <div class="text-lg font-bold text-blue-600">${h.morning}</div>
+                    <div class="text-lg font-bold text-purple-600">${h.evening}</div>
+                </div>
+             `).join('')}
+          </div>
+        </body></html>
+      `, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
   const bets = [];
@@ -455,7 +588,9 @@ serve(async (req) => {
         <div class="card-gradient rounded-2xl p-6 text-center text-white shadow-lg relative overflow-hidden">
           <div class="flex justify-between items-center mb-2 text-gray-300 text-sm"><span id="live_date">Today</span><span class="flex items-center gap-1"><i class="fas fa-circle text-green-500 text-[10px]"></i> Live</span></div>
           <div class="py-2"><div id="live_twod" class="text-8xl font-bold tracking-tighter drop-shadow-md">--</div><div class="text-sm mt-2 opacity-80">Update: <span id="live_time">--:--:--</span></div></div>
-          <div class="mt-4 border-t border-white/20 pt-2"><a href="/history" onclick="showLoader()" class="text-xs text-yellow-300 font-bold flex items-center justify-center gap-1 hover:text-white"><i class="fas fa-calendar-alt"></i> View 2D History</a></div>
+          <div class="mt-4 border-t border-white/20 pt-2">
+             <a href="/history" onclick="showLoader()" class="text-xs text-yellow-300 font-bold flex items-center justify-center gap-1 hover:text-white"><i class="fas fa-calendar-alt"></i> View 2D History</a>
+          </div>
         </div>
       </div>
 
@@ -466,12 +601,6 @@ serve(async (req) => {
       ${isAdmin ? `
         <div class="px-4 mb-4 space-y-4">
            <div class="grid grid-cols-3 gap-2"><div class="bg-green-100 border border-green-300 p-2 rounded text-center"><div class="text-[10px] font-bold text-green-600">TODAY SALE</div><div class="font-bold text-sm text-green-800">${todaySale.toLocaleString()}</div></div><div class="bg-red-100 border border-red-300 p-2 rounded text-center"><div class="text-[10px] font-bold text-red-600">PAYOUT</div><div class="font-bold text-sm text-red-800">${todayPayout.toLocaleString()}</div></div><div class="bg-blue-100 border border-blue-300 p-2 rounded text-center"><div class="text-[10px] font-bold text-blue-600">PROFIT</div><div class="font-bold text-sm text-blue-800">${todayProfit.toLocaleString()}</div></div></div>
-           
-           <div class="bg-white p-4 rounded shadow border-l-4 border-purple-500">
-             <h3 class="font-bold text-purple-600 mb-2">Add Manual History</h3>
-             <form action="/admin/add_history" method="POST" onsubmit="showLoader()" class="space-y-2"><input name="date" type="date" class="w-full border rounded p-2 text-sm" required><div class="flex gap-2"><input name="morning" placeholder="12:01 (e.g 41)" class="w-1/2 border rounded p-2 text-center"><input name="evening" placeholder="4:30 (e.g 92)" class="w-1/2 border rounded p-2 text-center"></div><button class="bg-purple-600 text-white w-full py-2 rounded font-bold text-xs">SAVE RECORD</button></form>
-           </div>
-
            <div class="bg-white p-4 rounded shadow border-l-4 border-red-500">
              <h3 class="font-bold text-red-600 mb-2">Payout & Rates</h3>
              <form action="/admin/rate" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2"><label class="text-xs font-bold mt-2">Ratio:</label><input name="rate" value="${currentRate}" class="w-16 border rounded p-1 text-center font-bold"><button class="bg-gray-700 text-white px-2 rounded text-xs">SET</button></form>
@@ -535,31 +664,7 @@ serve(async (req) => {
         async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else if (data.status === 'error_min') Swal.fire('Error', 'Minimum bet is 50 Ks', 'error'); else if (data.status === 'error_max') Swal.fire('Error', 'Maximum bet is 100,000 Ks', 'error'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
         function showVoucher(v) { const html = \`<div class="voucher-container"><div class="stamp">PAID</div><div class="voucher-header"><h2 class="text-xl font-bold">Myanmar 2D Voucher</h2><div class="text-xs text-gray-500">ID: \${v.id}</div><div class="text-sm mt-1">User: <b>\${v.user}</b></div><div class="text-xs text-gray-400">\${v.date} \${v.time}</div></div><div class="voucher-body">\${v.numbers.map(n => \`<div class="voucher-row"><span>\${n}</span><span>\${v.amountPerNum}</span></div>\`).join('')}</div><div class="voucher-total"><span>TOTAL</span><span>\${v.total} Ks</span></div></div>\`; document.getElementById('voucherContent').innerHTML = html; document.getElementById('voucherModal').classList.remove('hidden'); }
         const API_URL = "https://api.thaistock2d.com/live";
-        async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); 
-            const now = new Date();
-            const mmDate = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Yangon"}));
-            const todayStr = mmDate.getFullYear() + "-" + String(mmDate.getMonth()+1).padStart(2,'0') + "-" + String(mmDate.getDate()).padStart(2,'0');
-            const day = mmDate.getDay(); 
-            const isWeekend = (day === 0 || day === 6);
-            const isSameDay = data.live && data.live.date === todayStr;
-
-            if(data.live) { 
-                document.getElementById('live_twod').innerText = (isSameDay && !isWeekend) ? (data.live.twod || "--") : "--"; 
-                document.getElementById('live_date').innerText = data.live.date || "Today"; 
-                document.getElementById('live_time').innerText = (isSameDay && !isWeekend) ? (data.live.time || "--:--:--") : "--:--:--"; 
-            } 
-            
-            if (data.result) { 
-                if (isSameDay && !isWeekend) {
-                    if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } 
-                    const ev = data.result[3] || data.result[2]; 
-                    if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } 
-                } else {
-                    document.getElementById('set_12').innerText = "--"; document.getElementById('val_12').innerText = "--"; document.getElementById('res_12').innerText = "--";
-                    document.getElementById('set_430').innerText = "--"; document.getElementById('val_430').innerText = "--"; document.getElementById('res_430').innerText = "--";
-                }
-            } 
-        } catch (e) {} } setInterval(updateData, 2000); updateData();
+        async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); if(data.live) { document.getElementById('live_twod').innerText = data.live.twod || "--"; document.getElementById('live_date').innerText = data.live.date || "Today"; document.getElementById('live_time').innerText = data.live.time || "--:--:--"; } if (data.result) { if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } const ev = data.result[3] || data.result[2]; if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } } } catch (e) {} } setInterval(updateData, 2000); updateData();
         function doLogout() { sessionStorage.removeItem('splash_shown'); showLoader(); }
       </script>
     </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
