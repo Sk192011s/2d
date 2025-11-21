@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
 const kv = await Deno.openKv();
 
-// --- CRON JOB ---
+// --- CRON JOB: AUTO SAVE HISTORY (Every 10 mins) ---
 Deno.cron("Save History", "*/10 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
@@ -10,16 +10,19 @@ Deno.cron("Save History", "*/10 * * * *", async () => {
     const now = new Date();
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
+    
     const day = mmDate.getDay();
     if (day === 0 || day === 6) return; 
 
     let morning = "--";
     let evening = "--";
+
     if (data.result) {
         if (data.result[1] && data.result[1].twod) morning = data.result[1].twod;
         const ev = data.result[3] || data.result[2];
         if (ev && ev.twod) evening = ev.twod;
     }
+
     if (morning !== "--" || evening !== "--") {
         const existing = await kv.get(["history", dateKey]);
         const oldVal = existing.value as any || { morning: "--", evening: "--" };
@@ -34,31 +37,6 @@ Deno.cron("Save History", "*/10 * * * *", async () => {
 
 serve(async (req) => {
   const url = new URL(req.url);
-
-  // =========================
-  // 0. PROXY ROUTES (SPEED BOOST)
-  // =========================
-  // Tailwind CSS Proxy
-  if (url.pathname === "/lib/tailwind.js") {
-      const resp = await fetch("https://cdn.tailwindcss.com");
-      return new Response(await resp.blob(), { 
-          headers: { "content-type": "application/javascript", "cache-control": "public, max-age=86400" } 
-      });
-  }
-  // SweetAlert Proxy
-  if (url.pathname === "/lib/swal.js") {
-      const resp = await fetch("https://cdn.jsdelivr.net/npm/sweetalert2@11");
-      return new Response(await resp.blob(), { 
-          headers: { "content-type": "application/javascript", "cache-control": "public, max-age=86400" } 
-      });
-  }
-  // FontAwesome CSS Proxy (Basic)
-  if (url.pathname === "/lib/fa.css") {
-      const resp = await fetch("https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css");
-      return new Response(await resp.blob(), { 
-          headers: { "content-type": "text/css", "cache-control": "public, max-age=86400" } 
-      });
-  }
   
   // =========================
   // 1. AUTH
@@ -291,7 +269,10 @@ serve(async (req) => {
             if (type === "direct") numsToBlock.push(val.padStart(2, '0'));
             else if (type === "head") for(let i=0; i<10; i++) numsToBlock.push(val + i);
             else if (type === "tail") for(let i=0; i<10; i++) numsToBlock.push(i + val);
-            for (const n of numsToBlock) { if(n.length === 2) await kv.set(["blocks", n], true); }
+
+            for (const n of numsToBlock) {
+                if(n.length === 2) await kv.set(["blocks", n], true);
+            }
         }
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
@@ -319,11 +300,9 @@ serve(async (req) => {
   const commonHead = `
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    
-    <script src="/lib/tailwind.js"></script>
-    <script src="/lib/swal.js"></script>
-    <link href="/lib/fa.css" rel="stylesheet">
-
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
         body { font-family: 'Roboto', sans-serif; background-color: #4a3b32; color: white; -webkit-tap-highlight-color: transparent; }
@@ -356,12 +335,18 @@ serve(async (req) => {
         .text-shadow { text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
     </style>
     <script>
-        window.addEventListener('load', () => { 
-            const l = document.getElementById('app-loader'); 
+        // AGGRESSIVE LOADER HIDING
+        function forceHideLoader() {
+            const l = document.getElementById('app-loader');
             if(l) {
-                l.classList.add('hidden-loader'); 
-                setTimeout(() => l.style.display = 'none', 3000); // Force hide
+                l.classList.add('hidden-loader');
+                l.style.display = 'none'; // Force display none
             }
+        }
+        
+        window.addEventListener('pageshow', forceHideLoader); // Fix for back button
+        window.addEventListener('load', () => { 
+            forceHideLoader(); 
             const s = document.getElementById('splash-screen'); 
             if(s) { 
                 if(sessionStorage.getItem('splash_shown')){ s.style.display='none'; } 
@@ -370,8 +355,12 @@ serve(async (req) => {
                 } 
             } 
         });
+
+        // Timeout Failsafe: Force hide after 3 seconds no matter what
+        setTimeout(forceHideLoader, 3000);
+
         function showLoader() { const l = document.getElementById('app-loader'); if(l) { l.style.display='flex'; l.classList.remove('hidden-loader'); } }
-        function hideLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); }
+        function hideLoader() { forceHideLoader(); }
         function doLogout() { sessionStorage.removeItem('splash_shown'); showLoader(); }
     </script>
   `;
@@ -398,6 +387,13 @@ serve(async (req) => {
       const contact = contactEntry.value as any || { kpay_no: "09-", kpay_name: "Admin", wave_no: "09-", wave_name: "Admin", tele_link: "#", kpay_img: "", wave_img: "" };
 
       return new Response(`<!DOCTYPE html><html lang="en"><head><title>Profile</title>${commonHead}</head><body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">${loaderHTML}<div class="bg-[#4a3b32] text-white p-6 rounded-b-3xl shadow-lg text-center relative"><a href="/" onclick="showLoader()" class="absolute left-4 top-4 text-white/80 text-2xl"><i class="fas fa-arrow-left"></i></a><div class="relative w-24 h-24 mx-auto mb-3"><div class="w-24 h-24 rounded-full border-4 border-white/20 bg-white overflow-hidden flex items-center justify-center relative">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-[#4a3b32]"></i>`}</div><button onclick="document.getElementById('pInput').click()" class="absolute bottom-0 right-0 bg-yellow-500 text-white rounded-full p-2 shadow-lg border-2 border-[#4a3b32]"><i class="fas fa-camera text-xs"></i></button><input type="file" id="pInput" hidden accept="image/*" onchange="uploadAvatar(this)"></div><h1 class="text-xl font-bold uppercase">${currentUser}</h1><p class="text-white/70 text-sm">${balance.toLocaleString()} Ks</p></div><div class="p-4 space-y-4"><div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-lock text-yellow-500 mr-2"></i>Change Password</h3><form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2"><input type="password" name="new_password" placeholder="New Password" class="flex-1 border rounded p-2 text-sm" required><button class="bg-[#4a3b32] text-white px-4 py-2 rounded text-sm font-bold">Save</button></form></div><div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100 relative overflow-hidden"><img src="${contact.kpay_img || 'https://img.icons8.com/color/48/k-pay.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">KPay</div><div class="text-sm font-bold text-blue-800 select-all">${contact.kpay_no}</div><div class="text-[10px] text-gray-400">${contact.kpay_name}</div></div><div class="bg-yellow-50 p-3 rounded-lg text-center border border-yellow-100 relative overflow-hidden"><img src="${contact.wave_img || 'https://img.icons8.com/fluency/48/wave-money.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">Wave</div><div class="text-sm font-bold text-yellow-800 select-all">${contact.wave_no}</div><div class="text-[10px] text-gray-400">${contact.wave_name}</div></div><a href="${contact.tele_link}" target="_blank" class="col-span-2 bg-blue-500 text-white p-3 rounded-lg text-center font-bold flex items-center justify-center gap-2 hover:bg-blue-600"><i class="fab fa-telegram text-2xl"></i> Contact on Telegram</a></div></div><div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-history text-green-500 mr-2"></i>Transaction History</h3><div class="space-y-2 h-60 overflow-y-auto history-scroll">${transactions.length === 0 ? '<div class="text-center text-gray-400 text-xs py-4">No transactions yet</div>' : ''}${transactions.map(tx => `<div class="flex justify-between items-center p-2 bg-gray-50 rounded border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}"><div><div class="text-sm font-bold text-gray-700">${tx.type}</div><div class="text-xs text-gray-400">${tx.time}</div></div><div class="font-bold text-gray-700">+${tx.amount.toLocaleString()}</div></div>`).join('')}</div></div></div><script>const p=new URLSearchParams(window.location.search);if(p.get('status')==='pass_changed')Swal.fire('Success','Password Changed Successfully!','success');if(p.get('status')==='error')Swal.fire('Error','Something went wrong','error'); function uploadAvatar(input) { if(input.files && input.files[0]) { const file = input.files[0]; const reader = new FileReader(); reader.onload = function(e) { const img = new Image(); img.src = e.target.result; img.onload = function() { const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d'); const size = 150; canvas.width = size; canvas.height = size; let sSize = Math.min(img.width, img.height); let sx = (img.width - sSize) / 2; let sy = (img.height - sSize) / 2; ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size); const dataUrl = canvas.toDataURL('image/jpeg', 0.7); const fd = new FormData(); fd.append('avatar', dataUrl); showLoader(); fetch('/update_avatar', { method: 'POST', body: fd }).then(res => res.json()).then(d => { hideLoader(); if(d.status==='success') location.reload(); else Swal.fire('Error', 'Upload failed', 'error'); }); } }; reader.readAsDataURL(file); } } </script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
+  if (url.pathname === "/history") {
+      const historyList = [];
+      const hIter = kv.list({ prefix: ["history"] }, { reverse: true });
+      for await (const entry of hIter) historyList.push(entry.value);
+      return new Response(`<!DOCTYPE html><html lang="en"><head><title>History</title>${commonHead}</head><body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">${loaderHTML}<div class="bg-[#4a3b32] text-white p-4 shadow-lg flex items-center gap-4 sticky top-0 z-50"><a href="/" onclick="showLoader()" class="text-2xl"><i class="fas fa-arrow-left"></i></a><h1 class="text-xl font-bold">2D History</h1></div><div class="p-4 space-y-2"><div class="grid grid-cols-3 bg-gray-200 p-2 rounded font-bold text-center text-xs text-gray-600"><div>Date</div><div>12:01 PM</div><div>04:30 PM</div></div>${historyList.length === 0 ? '<div class="text-center p-4 text-gray-400">No history yet</div>' : ''}${historyList.map((h: any) => `<div class="grid grid-cols-3 bg-white p-3 rounded shadow-sm text-center items-center border-b"><div class="text-xs font-bold text-gray-500">${h.date}</div><div class="text-lg font-bold text-blue-600">${h.morning}</div><div class="text-lg font-bold text-purple-600">${h.evening}</div></div>`).join('')}</div></body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
   const bets = [];
@@ -468,10 +464,12 @@ serve(async (req) => {
       ${isAdmin ? `
         <div class="px-4 mb-4 space-y-4">
            <div class="grid grid-cols-3 gap-2"><div class="bg-green-100 border border-green-300 p-2 rounded text-center"><div class="text-[10px] font-bold text-green-600">TODAY SALE</div><div class="font-bold text-sm text-green-800">${todaySale.toLocaleString()}</div></div><div class="bg-red-100 border border-red-300 p-2 rounded text-center"><div class="text-[10px] font-bold text-red-600">PAYOUT</div><div class="font-bold text-sm text-red-800">${todayPayout.toLocaleString()}</div></div><div class="bg-blue-100 border border-blue-300 p-2 rounded text-center"><div class="text-[10px] font-bold text-blue-600">PROFIT</div><div class="font-bold text-sm text-blue-800">${todayProfit.toLocaleString()}</div></div></div>
+           
            <div class="bg-white p-4 rounded shadow border-l-4 border-purple-500">
              <h3 class="font-bold text-purple-600 mb-2">Add Manual History</h3>
              <form action="/admin/add_history" method="POST" onsubmit="showLoader()" class="space-y-2"><input name="date" type="date" class="w-full border rounded p-2 text-sm" required><div class="flex gap-2"><input name="morning" placeholder="12:01 (e.g 41)" class="w-1/2 border rounded p-2 text-center"><input name="evening" placeholder="4:30 (e.g 92)" class="w-1/2 border rounded p-2 text-center"></div><button class="bg-purple-600 text-white w-full py-2 rounded font-bold text-xs">SAVE RECORD</button></form>
            </div>
+
            <div class="bg-white p-4 rounded shadow border-l-4 border-red-500">
              <h3 class="font-bold text-red-600 mb-2">Payout & Rates</h3>
              <form action="/admin/rate" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2"><label class="text-xs font-bold mt-2">Ratio:</label><input name="rate" value="${currentRate}" class="w-16 border rounded p-1 text-center font-bold"><button class="bg-gray-700 text-white px-2 rounded text-xs">SET</button></form>
@@ -536,10 +534,12 @@ serve(async (req) => {
         function showVoucher(v) { const html = \`<div class="voucher-container"><div class="stamp">PAID</div><div class="voucher-header"><h2 class="text-xl font-bold">Myanmar 2D Voucher</h2><div class="text-xs text-gray-500">ID: \${v.id}</div><div class="text-sm mt-1">User: <b>\${v.user}</b></div><div class="text-xs text-gray-400">\${v.date} \${v.time}</div></div><div class="voucher-body">\${v.numbers.map(n => \`<div class="voucher-row"><span>\${n}</span><span>\${v.amountPerNum}</span></div>\`).join('')}</div><div class="voucher-total"><span>TOTAL</span><span>\${v.total} Ks</span></div></div>\`; document.getElementById('voucherContent').innerHTML = html; document.getElementById('voucherModal').classList.remove('hidden'); }
         const API_URL = "https://api.thaistock2d.com/live";
         async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); 
+            // DATE CHECK LOGIC
             const now = new Date();
             const mmDate = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Yangon"}));
             const todayStr = mmDate.getFullYear() + "-" + String(mmDate.getMonth()+1).padStart(2,'0') + "-" + String(mmDate.getDate()).padStart(2,'0');
-            const day = mmDate.getDay(); 
+            const day = mmDate.getDay(); // 0=Sun, 6=Sat
+            
             const isWeekend = (day === 0 || day === 6);
             const isSameDay = data.live && data.live.date === todayStr;
 
@@ -555,6 +555,7 @@ serve(async (req) => {
                     const ev = data.result[3] || data.result[2]; 
                     if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } 
                 } else {
+                    // Reset to default if weekend or date mismatch
                     document.getElementById('set_12').innerText = "--"; document.getElementById('val_12').innerText = "--"; document.getElementById('res_12').innerText = "--";
                     document.getElementById('set_430').innerText = "--"; document.getElementById('val_430').innerText = "--"; document.getElementById('res_430').innerText = "--";
                 }
