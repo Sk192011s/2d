@@ -20,7 +20,7 @@ serve(async (req) => {
     const userEntry = await kv.get(["users", username]);
     if (userEntry.value) return Response.redirect(url.origin + "/?error=user_exists");
 
-    await kv.set(["users", username], { password, balance: 0 });
+    await kv.set(["users", username], { password, balance: 0, avatar: "" });
     
     const headers = new Headers({ "Location": "/" });
     headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
@@ -56,8 +56,24 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. LOGIC & DATA
+  // 2. USER PROFILE ACTIONS
   // =========================
+  
+  // UPDATE PROFILE PIC (AJAX)
+  if (req.method === "POST" && url.pathname === "/update_avatar" && currentUser) {
+      const form = await req.formData();
+      const imageData = form.get("avatar")?.toString(); // Base64 string
+      
+      if (imageData) {
+          const userEntry = await kv.get(["users", currentUser]);
+          const userData = userEntry.value as any;
+          // Save updated user data with avatar
+          await kv.set(["users", currentUser], { ...userData, avatar: imageData });
+          return new Response(JSON.stringify({ status: "success" }), { headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ status: "error" }), { headers: { "content-type": "application/json" } });
+  }
+
   if (req.method === "POST" && url.pathname === "/change_password" && currentUser) {
       const form = await req.formData();
       const newPass = form.get("new_password")?.toString();
@@ -70,6 +86,9 @@ serve(async (req) => {
       return Response.redirect(url.origin + "/profile?status=error");
   }
 
+  // =========================
+  // 3. BETTING LOGIC
+  // =========================
   if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
       const iter = kv.list({ prefix: ["bets"] });
       let deletedCount = 0;
@@ -103,14 +122,8 @@ serve(async (req) => {
     
     if(!numbersRaw || amount <= 0) return new Response(JSON.stringify({ status: "invalid_bet" }), { headers: { "content-type": "application/json" } });
 
-    // --- CHECK MIN / MAX LIMITS ---
-    if (amount < 50) {
-        return new Response(JSON.stringify({ status: "error_min" }), { headers: { "content-type": "application/json" } });
-    }
-    if (amount > 100000) {
-        return new Response(JSON.stringify({ status: "error_max" }), { headers: { "content-type": "application/json" } });
-    }
-    // ------------------------------
+    if (amount < 50) return new Response(JSON.stringify({ status: "error_min" }), { headers: { "content-type": "application/json" } });
+    if (amount > 100000) return new Response(JSON.stringify({ status: "error_max" }), { headers: { "content-type": "application/json" } });
 
     const numberList = numbersRaw.split(",").filter(n => n.trim() !== "");
     
@@ -162,7 +175,7 @@ serve(async (req) => {
   }
 
   // =========================
-  // 3. ADMIN LOGIC
+  // 4. ADMIN LOGIC
   // =========================
   if (isAdmin && req.method === "POST") {
     if (url.pathname === "/admin/topup") {
@@ -209,7 +222,6 @@ serve(async (req) => {
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
 
-    // UPDATE PAYOUT RATE
     if (url.pathname === "/admin/rate") {
         const form = await req.formData();
         const rate = parseInt(form.get("rate")?.toString() || "80");
@@ -221,8 +233,6 @@ serve(async (req) => {
       const form = await req.formData();
       const winNumber = form.get("win_number")?.toString();
       const session = form.get("session")?.toString(); 
-
-      // Fetch Current Rate
       const rateEntry = await kv.get(["system", "rate"]);
       const payoutRate = (rateEntry.value as number) || 80;
 
@@ -238,7 +248,7 @@ serve(async (req) => {
 
           if (processBet) {
              if (bet.number === winNumber) {
-                const winAmount = bet.amount * payoutRate; // USE DYNAMIC RATE
+                const winAmount = bet.amount * payoutRate;
                 const userEntry = await kv.get(["users", bet.user]);
                 const userData = userEntry.value as any;
                 await kv.set(["users", bet.user], { ...userData, balance: (userData.balance || 0) + winAmount });
@@ -285,7 +295,7 @@ serve(async (req) => {
   }
 
   // =========================
-  // 4. UI RENDERING
+  // 5. UI RENDERING
   // =========================
   const commonHead = `
     <meta charset="UTF-8">
@@ -372,7 +382,9 @@ serve(async (req) => {
   }
 
   const userEntry = await kv.get(["users", currentUser]);
-  const balance = (userEntry.value as any)?.balance || 0;
+  const userData = userEntry.value as any;
+  const balance = userData?.balance || 0;
+  const avatar = userData?.avatar || ""; // BASE64 AVATAR
 
   if (url.pathname === "/profile") {
       const transactions = [];
@@ -392,7 +404,15 @@ serve(async (req) => {
           ${loaderHTML}
           <div class="bg-[#4a3b32] text-white p-6 rounded-b-3xl shadow-lg text-center relative">
              <a href="/" onclick="showLoader()" class="absolute left-4 top-4 text-white/80 text-2xl"><i class="fas fa-arrow-left"></i></a>
-             <div class="w-20 h-20 mx-auto bg-white rounded-full flex items-center justify-center text-[#4a3b32] text-4xl font-bold border-4 border-white/20 mb-2"><i class="fas fa-user"></i></div>
+             
+             <div class="relative w-24 h-24 mx-auto mb-3">
+                 <div class="w-24 h-24 rounded-full border-4 border-white/20 bg-white overflow-hidden flex items-center justify-center relative">
+                    ${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-[#4a3b32]"></i>`}
+                 </div>
+                 <button onclick="document.getElementById('pInput').click()" class="absolute bottom-0 right-0 bg-yellow-500 text-white rounded-full p-2 shadow-lg border-2 border-[#4a3b32]"><i class="fas fa-camera text-xs"></i></button>
+                 <input type="file" id="pInput" hidden accept="image/*" onchange="uploadAvatar(this)">
+             </div>
+
              <h1 class="text-xl font-bold uppercase">${currentUser}</h1>
              <p class="text-white/70 text-sm">${balance.toLocaleString()} Ks</p>
           </div>
@@ -405,8 +425,50 @@ serve(async (req) => {
              </div></div>
              <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-history text-green-500 mr-2"></i>Transaction History</h3><div class="space-y-2 h-60 overflow-y-auto history-scroll">${transactions.length === 0 ? '<div class="text-center text-gray-400 text-xs py-4">No transactions yet</div>' : ''}${transactions.map(tx => `<div class="flex justify-between items-center p-2 bg-gray-50 rounded border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}"><div><div class="text-sm font-bold text-gray-700">${tx.type}</div><div class="text-xs text-gray-400">${tx.time}</div></div><div class="font-bold text-gray-700">+${tx.amount.toLocaleString()}</div></div>`).join('')}</div></div>
           </div>
-          <script>const p=new URLSearchParams(window.location.search);if(p.get('status')==='pass_changed')Swal.fire('Success','Password Changed Successfully!','success');if(p.get('status')==='error')Swal.fire('Error','Something went wrong','error');</script>
-        </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+          <script>
+             const p=new URLSearchParams(window.location.search);if(p.get('status')==='pass_changed')Swal.fire('Success','Password Changed Successfully!','success');if(p.get('status')==='error')Swal.fire('Error','Something went wrong','error');
+             
+             // AVATAR UPLOAD LOGIC
+             function uploadAvatar(input) {
+                 if(input.files && input.files[0]) {
+                     const file = input.files[0];
+                     const reader = new FileReader();
+                     reader.onload = function(e) {
+                         const img = new Image();
+                         img.src = e.target.result;
+                         img.onload = function() {
+                             // Resize to 150x150
+                             const canvas = document.createElement('canvas');
+                             const ctx = canvas.getContext('2d');
+                             const size = 150;
+                             canvas.width = size; canvas.height = size;
+                             // Simple cover fit
+                             let sSize = Math.min(img.width, img.height);
+                             let sx = (img.width - sSize) / 2;
+                             let sy = (img.height - sSize) / 2;
+                             ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size);
+                             
+                             // Compress & Upload
+                             const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+                             const fd = new FormData();
+                             fd.append('avatar', dataUrl);
+                             
+                             showLoader();
+                             fetch('/update_avatar', { method: 'POST', body: fd })
+                             .then(res => res.json())
+                             .then(d => {
+                                 hideLoader();
+                                 if(d.status==='success') location.reload();
+                                 else Swal.fire('Error', 'Upload failed', 'error');
+                             });
+                         }
+                     }
+                     reader.readAsDataURL(file);
+                 }
+             }
+          </script>
+        </body></html>
+      `, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
   const bets = [];
@@ -437,7 +499,10 @@ serve(async (req) => {
     <body class="max-w-md mx-auto min-h-screen bg-gray-100 pb-10 text-gray-800">
       ${loaderHTML} ${splashHTML}
       <nav class="bg-theme h-14 flex justify-between items-center px-4 text-white shadow-md sticky top-0 z-50">
-        <a href="/profile" onclick="showLoader()" class="font-bold text-lg uppercase tracking-wider flex items-center gap-2"><i class="fas fa-user-circle text-2xl"></i> ${currentUser}</a>
+        <a href="/profile" onclick="showLoader()" class="font-bold text-lg uppercase tracking-wider flex items-center gap-2">
+            ${avatar ? `<img src="${avatar}" class="w-8 h-8 rounded-full border border-white">` : `<i class="fas fa-user-circle text-2xl"></i>`}
+            ${currentUser}
+        </a>
         <div class="flex gap-4 items-center">
            <div class="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full border border-white/20"><i class="fas fa-wallet text-xs text-yellow-400"></i><span id="navBalance" class="text-sm font-bold">${balance.toLocaleString()} Ks</span></div>
            <a href="/logout" onclick="doLogout()" class="text-xs border border-white/30 px-2 py-1 rounded hover:bg-white/10">Logout</a>
@@ -482,12 +547,10 @@ serve(async (req) => {
              <h3 class="font-bold text-purple-600 mb-2">Lucky Tip</h3>
              <form action="/admin/tip" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="tip" placeholder="Tip text" class="flex-1 border rounded p-1 text-sm" value="${dailyTip}"><button class="bg-purple-600 text-white px-3 rounded text-xs font-bold">UPDATE</button></form>
            </div>
-           
            <div class="bg-white p-4 rounded shadow border-l-4 border-yellow-500">
              <h3 class="font-bold text-yellow-600 mb-2">Reset Password</h3>
              <form action="/admin/reset_pass" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm" required><input name="password" placeholder="New Pass" class="w-1/3 border rounded p-1 text-sm" required><button class="bg-yellow-600 text-white w-1/3 rounded text-xs font-bold">RESET</button></form>
            </div>
-           
            <div class="bg-white p-4 rounded shadow border-l-4 border-gray-600">
              <h3 class="font-bold text-gray-600 mb-2">Blocks</h3>
              <form action="/admin/block" method="POST" onsubmit="showLoader()"><input type="hidden" name="action" value="add"><div class="flex gap-2 mb-2"><input name="block_val" type="number" placeholder="Num" class="w-1/2 border rounded p-2 text-center font-bold"><select name="block_type" class="w-1/2 border rounded p-2 text-xs font-bold"><option value="direct">Direct</option><option value="head">Head</option><option value="tail">Tail</option></select></div><div class="flex gap-2"><button class="bg-gray-800 text-white flex-1 py-2 rounded text-xs font-bold">BLOCK</button><button type="submit" formaction="/admin/block" name="action" value="clear" class="bg-red-500 text-white w-1/3 py-2 rounded text-xs font-bold">CLEAR</button></div></form>
