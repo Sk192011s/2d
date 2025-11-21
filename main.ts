@@ -6,9 +6,9 @@ serve(async (req) => {
   const url = new URL(req.url);
   
   // =========================
-  // 1. AUTH (Login/Register with 15 Days Cookie)
+  // 1. AUTH
   // =========================
-  const cookieOptions = "; Path=/; HttpOnly; Max-Age=1296000"; // 15 Days (15*24*60*60)
+  const cookieOptions = "; Path=/; HttpOnly; Max-Age=1296000"; // 15 Days
 
   if (req.method === "POST" && url.pathname === "/register") {
     const form = await req.formData();
@@ -158,7 +158,6 @@ serve(async (req) => {
       return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
     
-    // PASSWORD RESET LOGIC
     if (url.pathname === "/admin/reset_pass") {
         const form = await req.formData();
         const targetUser = form.get("username")?.toString();
@@ -242,22 +241,35 @@ serve(async (req) => {
   // =========================
   const commonHead = `
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
-        body { font-family: 'Roboto', sans-serif; background-color: #4a3b32; color: white; }
+        body { font-family: 'Roboto', sans-serif; background-color: #4a3b32; color: white; -webkit-tap-highlight-color: transparent; }
         .bg-theme { background-color: #4a3b32; }
         .text-theme { color: #4a3b32; }
         .card-gradient { background: linear-gradient(135deg, #5d4037 0%, #3e2723 100%); }
         .tab-active { background-color: #4a3b32; color: white; }
         .tab-inactive { background-color: #eee; color: #666; }
+        
+        /* ACTION LOADER */
         #app-loader { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 9999; display: flex; justify-content: center; align-items: center; transition: opacity 0.3s ease; }
         .spinner { width: 50px; height: 50px; border: 5px solid #fff; border-bottom-color: transparent; border-radius: 50%; animation: rotation 1s linear infinite; }
         @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .hidden-loader { opacity: 0; pointer-events: none; }
+        
+        /* SPLASH SCREEN */
+        #splash-screen { position: fixed; inset: 0; background-color: #4a3b32; z-index: 10000; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.7s ease-out; }
+        .splash-logo { width: 100px; height: 100px; margin-bottom: 20px; animation: bounce 2s infinite; }
+        @keyframes bounce { 0%, 100% { transform: translateY(-10%); } 50% { transform: translateY(0); } }
+        .loading-bar { width: 150px; height: 4px; background: rgba(255,255,255,0.2); border-radius: 2px; overflow: hidden; }
+        .loading-progress { height: 100%; background: #fbbf24; width: 50%; animation: loading 2s infinite ease-in-out; }
+        @keyframes loading { 0% { transform: translateX(-100%); } 100% { transform: translateX(200%); } }
+
+        /* SCROLLBAR & VOUCHER */
         .history-scroll::-webkit-scrollbar { width: 4px; }
         .history-scroll::-webkit-scrollbar-track { background: #f1f1f1; }
         .history-scroll::-webkit-scrollbar-thumb { background: #888; border-radius: 2px; }
@@ -274,12 +286,35 @@ serve(async (req) => {
         .text-shadow { text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
     </style>
     <script>
-        window.addEventListener('load', () => { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); });
+        // APP LOADER & SPLASH LOGIC
+        window.addEventListener('load', () => { 
+            const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); 
+            
+            // SPLASH TIMEOUT
+            setTimeout(() => {
+                const splash = document.getElementById('splash-screen');
+                if(splash) {
+                    splash.style.opacity = '0';
+                    setTimeout(() => splash.style.display = 'none', 700);
+                }
+            }, 2000); // Show splash for 2 seconds
+        });
         function showLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.remove('hidden-loader'); }
         function hideLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); }
     </script>
   `;
+  
   const loaderHTML = `<div id="app-loader"><div class="spinner"></div></div>`;
+  
+  // 2. SPLASH SCREEN HTML
+  const splashHTML = `
+    <div id="splash-screen">
+        <img src="https://img.icons8.com/color/144/shop.png" class="splash-logo">
+        <h1 class="text-3xl font-bold text-white tracking-[5px] mb-6">MYANMAR 2D</h1>
+        <div class="loading-bar"><div class="loading-progress"></div></div>
+        <p class="text-xs text-white/50 mt-4 uppercase tracking-wider">Loading System...</p>
+    </div>
+  `;
 
   if (!currentUser) {
     return new Response(`
@@ -287,6 +322,7 @@ serve(async (req) => {
       <html lang="en">
       <head><title>Welcome</title>${commonHead}</head>
       <body class="h-screen flex items-center justify-center px-4 bg-[#4a3b32]">
+        ${splashHTML}
         ${loaderHTML}
         <div class="bg-white text-gray-800 p-6 rounded-xl w-full max-w-sm shadow-2xl text-center">
           <img src="https://img.icons8.com/color/96/shop.png" class="mx-auto mb-4 w-16">
@@ -342,6 +378,7 @@ serve(async (req) => {
     <html lang="en">
     <head><title>Myanmar 2D</title>${commonHead}</head>
     <body class="max-w-md mx-auto min-h-screen bg-gray-100 pb-10 text-gray-800">
+      ${splashHTML}
       ${loaderHTML}
       <nav class="bg-theme h-14 flex justify-between items-center px-4 text-white shadow-md sticky top-0 z-50">
         <div class="font-bold text-lg uppercase tracking-wider"><i class="fas fa-user-circle mr-2"></i>${currentUser}</div>
