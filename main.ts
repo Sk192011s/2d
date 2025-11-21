@@ -2,52 +2,6 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
 const kv = await Deno.openKv();
 
-// --- CRON JOB: AUTO SAVE 2D RESULTS ---
-// Runs every 10 minutes to snatch results from API
-Deno.cron("Save 2D History", "*/10 * * * *", async () => {
-  try {
-    const res = await fetch("https://api.thaistock2d.com/live");
-    const data = await res.json();
-    
-    // Get Myanmar Date String (YYYY-MM-DD)
-    const now = new Date();
-    const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
-    const dateKey = mmDate.getFullYear() + "-" + 
-                    String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + 
-                    String(mmDate.getDate()).padStart(2, '0');
-
-    // Check if weekend (Sat=6, Sun=0) - usually no 2D, but we check API data anyway
-    
-    let morning = "--";
-    let evening = "--";
-
-    if (data.result) {
-        // Usually Index 1 is Morning, Index 3 (or 2) is Evening
-        if (data.result[1] && data.result[1].twod) morning = data.result[1].twod;
-        
-        const ev = data.result[3] || data.result[2];
-        if (ev && ev.twod) evening = ev.twod;
-    }
-
-    // Only save if we have at least one result
-    if (morning !== "--" || evening !== "--") {
-        // Get existing to avoid overwriting with "--" if API resets early
-        const existing = await kv.get(["history", dateKey]);
-        const oldVal = existing.value as any || { morning: "--", evening: "--" };
-        
-        const newVal = {
-            morning: morning !== "--" ? morning : oldVal.morning,
-            evening: evening !== "--" ? evening : oldVal.evening,
-            date: dateKey
-        };
-        
-        await kv.set(["history", dateKey], newVal);
-    }
-  } catch (e) {
-    console.error("Auto-save failed:", e);
-  }
-});
-
 serve(async (req) => {
   const url = new URL(req.url);
   
@@ -129,110 +83,7 @@ serve(async (req) => {
   }
 
   // =========================
-  // 3. ADMIN MANUAL HISTORY
-  // =========================
-  if (isAdmin && req.method === "POST" && url.pathname === "/admin/add_history") {
-      const form = await req.formData();
-      const date = form.get("date")?.toString(); // YYYY-MM-DD
-      const morning = form.get("morning")?.toString() || "--";
-      const evening = form.get("evening")?.toString() || "--";
-      
-      if (date) {
-          await kv.set(["history", date], { morning, evening, date });
-      }
-      return new Response(null, { status: 303, headers: { "Location": "/profile" } }); // Redirect back to profile/admin
-  }
-
-  // =========================
-  // 4. BETTING LOGIC
-  // =========================
-  if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
-      const iter = kv.list({ prefix: ["bets"] });
-      let deletedCount = 0;
-      for await (const entry of iter) {
-          const bet = entry.value as any;
-          if (bet.user === currentUser && bet.status !== "PENDING") {
-              await kv.delete(entry.key);
-              deletedCount++;
-          }
-      }
-      return new Response(JSON.stringify({ status: "cleared", count: deletedCount }), { headers: { "content-type": "application/json" } });
-  }
-
-  if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
-    const now = new Date();
-    const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
-    const timePart = mmString.split(", ")[1];
-    const [h, m] = timePart.split(":").map(Number);
-    const totalMins = h * 60 + m;
-
-    const isMorningClose = totalMins >= 710 && totalMins < 735; 
-    const isEveningClose = totalMins >= 950 || totalMins < 480; 
-
-    if (isMorningClose || isEveningClose) {
-        return new Response(JSON.stringify({ status: "market_closed" }), { headers: { "content-type": "application/json" } });
-    }
-
-    const form = await req.formData();
-    const numbersRaw = form.get("number")?.toString() || ""; 
-    const amount = parseInt(form.get("amount")?.toString() || "0");
-    
-    if(!numbersRaw || amount <= 0) return new Response(JSON.stringify({ status: "invalid_bet" }), { headers: { "content-type": "application/json" } });
-
-    if (amount < 50) return new Response(JSON.stringify({ status: "error_min" }), { headers: { "content-type": "application/json" } });
-    if (amount > 100000) return new Response(JSON.stringify({ status: "error_max" }), { headers: { "content-type": "application/json" } });
-
-    const numberList = numbersRaw.split(",").filter(n => n.trim() !== "");
-    
-    for (const num of numberList) {
-        const isBlocked = await kv.get(["blocks", num.trim()]);
-        if (isBlocked.value) {
-            return new Response(JSON.stringify({ status: "blocked", num: num.trim() }), { headers: { "content-type": "application/json" } });
-        }
-    }
-
-    const totalCost = numberList.length * amount;
-    const userEntry = await kv.get(["users", currentUser]);
-    const userData = userEntry.value as any;
-    const currentBalance = userData?.balance || 0;
-
-    if (currentBalance < totalCost) {
-        return new Response(JSON.stringify({ status: "insufficient_balance" }), { headers: { "content-type": "application/json" } });
-    }
-
-    await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
-    
-    const timeString = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", hour: 'numeric', minute: 'numeric', hour12: true });
-    const dateString = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", day: 'numeric', month: 'short', year: 'numeric' });
-
-    for (const num of numberList) {
-        const betId = Date.now().toString() + Math.random().toString().substr(2, 5);
-        await kv.set(["bets", betId], { 
-            user: currentUser, 
-            number: num.trim(), 
-            amount, 
-            status: "PENDING", 
-            time: timeString,
-            rawMins: totalMins
-        });
-    }
-
-    return new Response(JSON.stringify({ 
-        status: "success",
-        voucher: {
-            user: currentUser,
-            date: dateString,
-            time: timeString,
-            numbers: numberList,
-            amountPerNum: amount,
-            total: totalCost,
-            id: Date.now().toString().slice(-6)
-        }
-    }), { headers: { "content-type": "application/json" } });
-  }
-
-  // =========================
-  // 5. ADMIN LOGIC
+  // 3. ADMIN LOGIC
   // =========================
   if (isAdmin && req.method === "POST") {
     if (url.pathname === "/admin/topup") {
@@ -352,7 +203,95 @@ serve(async (req) => {
   }
 
   // =========================
-  // 6. UI RENDERING
+  // 4. BETTING LOGIC
+  // =========================
+  if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
+      const iter = kv.list({ prefix: ["bets"] });
+      let deletedCount = 0;
+      for await (const entry of iter) {
+          const bet = entry.value as any;
+          if (bet.user === currentUser && bet.status !== "PENDING") {
+              await kv.delete(entry.key);
+              deletedCount++;
+          }
+      }
+      return new Response(JSON.stringify({ status: "cleared", count: deletedCount }), { headers: { "content-type": "application/json" } });
+  }
+
+  if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
+    const now = new Date();
+    const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
+    const timePart = mmString.split(", ")[1];
+    const [h, m] = timePart.split(":").map(Number);
+    const totalMins = h * 60 + m;
+
+    const isMorningClose = totalMins >= 710 && totalMins < 735; 
+    const isEveningClose = totalMins >= 950 || totalMins < 480; 
+
+    if (isMorningClose || isEveningClose) {
+        return new Response(JSON.stringify({ status: "market_closed" }), { headers: { "content-type": "application/json" } });
+    }
+
+    const form = await req.formData();
+    const numbersRaw = form.get("number")?.toString() || ""; 
+    const amount = parseInt(form.get("amount")?.toString() || "0");
+    
+    if(!numbersRaw || amount <= 0) return new Response(JSON.stringify({ status: "invalid_bet" }), { headers: { "content-type": "application/json" } });
+
+    if (amount < 50) return new Response(JSON.stringify({ status: "error_min" }), { headers: { "content-type": "application/json" } });
+    if (amount > 100000) return new Response(JSON.stringify({ status: "error_max" }), { headers: { "content-type": "application/json" } });
+
+    const numberList = numbersRaw.split(",").filter(n => n.trim() !== "");
+    
+    for (const num of numberList) {
+        const isBlocked = await kv.get(["blocks", num.trim()]);
+        if (isBlocked.value) {
+            return new Response(JSON.stringify({ status: "blocked", num: num.trim() }), { headers: { "content-type": "application/json" } });
+        }
+    }
+
+    const totalCost = numberList.length * amount;
+    const userEntry = await kv.get(["users", currentUser]);
+    const userData = userEntry.value as any;
+    const currentBalance = userData?.balance || 0;
+
+    if (currentBalance < totalCost) {
+        return new Response(JSON.stringify({ status: "insufficient_balance" }), { headers: { "content-type": "application/json" } });
+    }
+
+    await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
+    
+    const timeString = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", hour: 'numeric', minute: 'numeric', hour12: true });
+    const dateString = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", day: 'numeric', month: 'short', year: 'numeric' });
+
+    for (const num of numberList) {
+        const betId = Date.now().toString() + Math.random().toString().substr(2, 5);
+        await kv.set(["bets", betId], { 
+            user: currentUser, 
+            number: num.trim(), 
+            amount, 
+            status: "PENDING", 
+            time: timeString,
+            rawMins: totalMins
+        });
+    }
+
+    return new Response(JSON.stringify({ 
+        status: "success",
+        voucher: {
+            user: currentUser,
+            date: dateString,
+            time: timeString,
+            numbers: numberList,
+            amountPerNum: amount,
+            total: totalCost,
+            id: Date.now().toString().slice(-6)
+        }
+    }), { headers: { "content-type": "application/json" } });
+  }
+
+  // =========================
+  // 5. UI RENDERING
   // =========================
   const commonHead = `
     <meta charset="UTF-8">
@@ -470,20 +409,6 @@ serve(async (req) => {
              <p class="text-white/70 text-sm">${balance.toLocaleString()} Ks</p>
           </div>
           <div class="p-4 space-y-4">
-             
-             ${isAdmin ? `
-             <div class="bg-white p-4 rounded-xl shadow-sm border-l-4 border-purple-500">
-                <h3 class="font-bold text-purple-600 mb-3"><i class="fas fa-calendar-plus mr-2"></i>Add Past History</h3>
-                <form action="/admin/add_history" method="POST" onsubmit="showLoader()" class="space-y-2">
-                    <input name="date" type="date" class="w-full border rounded p-2 text-sm" required>
-                    <div class="flex gap-2">
-                        <input name="morning" placeholder="12:01 (e.g 41)" class="w-1/2 border rounded p-2 text-center">
-                        <input name="evening" placeholder="4:30 (e.g 92)" class="w-1/2 border rounded p-2 text-center">
-                    </div>
-                    <button class="bg-purple-600 text-white w-full py-2 rounded font-bold text-xs">SAVE RECORD</button>
-                </form>
-             </div>` : ''}
-
              <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-lock text-yellow-500 mr-2"></i>Change Password</h3><form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2"><input type="password" name="new_password" placeholder="New Password" class="flex-1 border rounded p-2 text-sm" required><button class="bg-[#4a3b32] text-white px-4 py-2 rounded text-sm font-bold">Save</button></form></div>
              <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin</h3><div class="grid grid-cols-2 gap-2">
                 <div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100 relative overflow-hidden"><img src="${contact.kpay_img || 'https://img.icons8.com/color/48/k-pay.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">KPay</div><div class="text-sm font-bold text-blue-800 select-all">${contact.kpay_no}</div><div class="text-[10px] text-gray-400">${contact.kpay_name}</div></div>
@@ -494,41 +419,6 @@ serve(async (req) => {
           </div>
           <script>const p=new URLSearchParams(window.location.search);if(p.get('status')==='pass_changed')Swal.fire('Success','Password Changed Successfully!','success');if(p.get('status')==='error')Swal.fire('Error','Something went wrong','error'); function uploadAvatar(input) { if(input.files && input.files[0]) { const file = input.files[0]; const reader = new FileReader(); reader.onload = function(e) { const img = new Image(); img.src = e.target.result; img.onload = function() { const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d'); const size = 150; canvas.width = size; canvas.height = size; let sSize = Math.min(img.width, img.height); let sx = (img.width - sSize) / 2; let sy = (img.height - sSize) / 2; ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size); const dataUrl = canvas.toDataURL('image/jpeg', 0.7); const fd = new FormData(); fd.append('avatar', dataUrl); showLoader(); fetch('/update_avatar', { method: 'POST', body: fd }).then(res => res.json()).then(d => { hideLoader(); if(d.status==='success') location.reload(); else Swal.fire('Error', 'Upload failed', 'error'); }); } }; reader.readAsDataURL(file); } } </script>
         </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
-  }
-
-  // HISTORY PAGE
-  if (url.pathname === "/history") {
-      const historyList = [];
-      const hIter = kv.list({ prefix: ["history"] }, { reverse: true });
-      for await (const entry of hIter) {
-          historyList.push(entry.value);
-      }
-
-      return new Response(`
-        <!DOCTYPE html>
-        <html lang="en">
-        <head><title>History</title>${commonHead}</head>
-        <body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">
-          ${loaderHTML}
-          <div class="bg-[#4a3b32] text-white p-4 shadow-lg flex items-center gap-4 sticky top-0 z-50">
-             <a href="/" onclick="showLoader()" class="text-2xl"><i class="fas fa-arrow-left"></i></a>
-             <h1 class="text-xl font-bold">2D History</h1>
-          </div>
-          <div class="p-4 space-y-2">
-             <div class="grid grid-cols-3 bg-gray-200 p-2 rounded font-bold text-center text-xs text-gray-600">
-                <div>Date</div><div>12:01 PM</div><div>04:30 PM</div>
-             </div>
-             ${historyList.length === 0 ? '<div class="text-center p-4 text-gray-400">No history yet</div>' : ''}
-             ${historyList.map((h: any) => `
-                <div class="grid grid-cols-3 bg-white p-3 rounded shadow-sm text-center items-center border-b">
-                    <div class="text-xs font-bold text-gray-500">${h.date}</div>
-                    <div class="text-lg font-bold text-blue-600">${h.morning}</div>
-                    <div class="text-lg font-bold text-purple-600">${h.evening}</div>
-                </div>
-             `).join('')}
-          </div>
-        </body></html>
-      `, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
   const bets = [];
@@ -588,9 +478,6 @@ serve(async (req) => {
         <div class="card-gradient rounded-2xl p-6 text-center text-white shadow-lg relative overflow-hidden">
           <div class="flex justify-between items-center mb-2 text-gray-300 text-sm"><span id="live_date">Today</span><span class="flex items-center gap-1"><i class="fas fa-circle text-green-500 text-[10px]"></i> Live</span></div>
           <div class="py-2"><div id="live_twod" class="text-8xl font-bold tracking-tighter drop-shadow-md">--</div><div class="text-sm mt-2 opacity-80">Update: <span id="live_time">--:--:--</span></div></div>
-          <div class="mt-4 border-t border-white/20 pt-2">
-             <a href="/history" onclick="showLoader()" class="text-xs text-yellow-300 font-bold flex items-center justify-center gap-1 hover:text-white"><i class="fas fa-calendar-alt"></i> View 2D History</a>
-          </div>
         </div>
       </div>
 
@@ -664,7 +551,35 @@ serve(async (req) => {
         async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else if (data.status === 'error_min') Swal.fire('Error', 'Minimum bet is 50 Ks', 'error'); else if (data.status === 'error_max') Swal.fire('Error', 'Maximum bet is 100,000 Ks', 'error'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
         function showVoucher(v) { const html = \`<div class="voucher-container"><div class="stamp">PAID</div><div class="voucher-header"><h2 class="text-xl font-bold">Myanmar 2D Voucher</h2><div class="text-xs text-gray-500">ID: \${v.id}</div><div class="text-sm mt-1">User: <b>\${v.user}</b></div><div class="text-xs text-gray-400">\${v.date} \${v.time}</div></div><div class="voucher-body">\${v.numbers.map(n => \`<div class="voucher-row"><span>\${n}</span><span>\${v.amountPerNum}</span></div>\`).join('')}</div><div class="voucher-total"><span>TOTAL</span><span>\${v.total} Ks</span></div></div>\`; document.getElementById('voucherContent').innerHTML = html; document.getElementById('voucherModal').classList.remove('hidden'); }
         const API_URL = "https://api.thaistock2d.com/live";
-        async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); if(data.live) { document.getElementById('live_twod').innerText = data.live.twod || "--"; document.getElementById('live_date').innerText = data.live.date || "Today"; document.getElementById('live_time').innerText = data.live.time || "--:--:--"; } if (data.result) { if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } const ev = data.result[3] || data.result[2]; if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } } } catch (e) {} } setInterval(updateData, 2000); updateData();
+        async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); 
+            // DATE CHECK LOGIC
+            const now = new Date();
+            const mmDate = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Yangon"}));
+            const todayStr = mmDate.getFullYear() + "-" + String(mmDate.getMonth()+1).padStart(2,'0') + "-" + String(mmDate.getDate()).padStart(2,'0');
+            
+            // Check if API Date matches Today (Myanmar Time)
+            // Using data.live.date from API (usually YYYY-MM-DD)
+            const isSameDay = data.live && data.live.date === todayStr;
+
+            if(data.live) { 
+                document.getElementById('live_twod').innerText = data.live.twod || "--"; 
+                document.getElementById('live_date').innerText = data.live.date || "Today"; 
+                document.getElementById('live_time').innerText = data.live.time || "--:--:--"; 
+            } 
+            
+            if (data.result) { 
+                // Only show results if API date matches today, otherwise clear them
+                if (isSameDay) {
+                    if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } 
+                    const ev = data.result[3] || data.result[2]; 
+                    if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } 
+                } else {
+                    // Reset to default if date mismatch
+                    document.getElementById('set_12').innerText = "--"; document.getElementById('val_12').innerText = "--"; document.getElementById('res_12').innerText = "--";
+                    document.getElementById('set_430').innerText = "--"; document.getElementById('val_430').innerText = "--"; document.getElementById('res_430').innerText = "--";
+                }
+            } 
+        } catch (e) {} } setInterval(updateData, 2000); updateData();
         function doLogout() { sessionStorage.removeItem('splash_shown'); showLoader(); }
       </script>
     </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
