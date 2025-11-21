@@ -54,8 +54,24 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. BETTING LOGIC
+  // 2. BETTING & HISTORY LOGIC
   // =========================
+  
+  // CLEAR HISTORY FEATURE
+  if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
+      const iter = kv.list({ prefix: ["bets"] });
+      let deletedCount = 0;
+      for await (const entry of iter) {
+          const bet = entry.value as any;
+          // Only delete current user's bets that are NOT pending
+          if (bet.user === currentUser && bet.status !== "PENDING") {
+              await kv.delete(entry.key);
+              deletedCount++;
+          }
+      }
+      return new Response(JSON.stringify({ status: "cleared", count: deletedCount }), { headers: { "content-type": "application/json" } });
+  }
+
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
     const now = new Date();
     const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
@@ -387,10 +403,12 @@ serve(async (req) => {
 
       <div class="px-4">
         <div class="flex justify-between items-center mb-2">
-            <h3 class="font-bold text-gray-500 text-sm uppercase tracking-wider">Betting History (Last 50)</h3>
-            <div class="relative">
-                <input type="text" id="historySearch" onkeyup="filterHistory()" placeholder="Search No..." class="border rounded-full px-3 py-1 text-xs focus:outline-none focus:border-yellow-500 w-32 text-center text-black">
-                <i class="fas fa-search absolute right-3 top-1.5 text-gray-400 text-xs"></i>
+            <h3 class="font-bold text-gray-500 text-sm uppercase tracking-wider">Betting History</h3>
+            <div class="flex gap-2">
+                <div class="relative">
+                    <input type="text" id="historySearch" onkeyup="filterHistory()" placeholder="Search..." class="border rounded-full px-3 py-1 text-xs focus:outline-none focus:border-yellow-500 w-24 text-center text-black">
+                </div>
+                <button onclick="confirmClearHistory()" class="bg-red-100 text-red-500 p-1 rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-200"><i class="fas fa-trash text-xs"></i></button>
             </div>
         </div>
         <div id="historyList" class="space-y-2 h-80 overflow-y-auto history-scroll rounded-lg border border-gray-200 bg-white p-2 shadow-inner">
@@ -450,7 +468,6 @@ serve(async (req) => {
         const p = new URLSearchParams(window.location.search);
         if(p.get('status')==='market_closed') Swal.fire({icon:'warning',title:'Market Closed',text:'Betting is currently closed.',confirmButtonColor:'#d97736'});
 
-        // HISTORY SEARCH FILTER
         function filterHistory() {
             const input = document.getElementById('historySearch');
             const filter = input.value.trim();
@@ -459,12 +476,31 @@ serve(async (req) => {
             for (let i = 0; i < items.length; i++) {
                 const numberSpan = items[i].querySelector('.bet-number');
                 const txtValue = numberSpan.textContent || numberSpan.innerText;
-                if (txtValue.indexOf(filter) > -1) {
-                    items[i].style.display = "";
-                } else {
-                    items[i].style.display = "none";
-                }
+                if (txtValue.indexOf(filter) > -1) items[i].style.display = "";
+                else items[i].style.display = "none";
             }
+        }
+
+        function confirmClearHistory() {
+            Swal.fire({
+                title: 'Clear History?',
+                text: "Only finished bets will be removed. Pending bets will stay.",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                cancelButtonColor: '#3085d6',
+                confirmButtonText: 'Yes, clear it!'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    showLoader();
+                    fetch('/clear_history', { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => {
+                        hideLoader();
+                        Swal.fire('Cleared!', data.count + ' records removed.', 'success').then(() => window.location.reload());
+                    });
+                }
+            })
         }
 
         let currentQuickMode = '';
