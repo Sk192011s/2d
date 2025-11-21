@@ -6,14 +6,20 @@ serve(async (req) => {
   const url = new URL(req.url);
   
   // =========================
-  // 1. AUTH
+  // 1. AUTH (Login/Register)
   // =========================
-  const cookieOptions = "; Path=/; HttpOnly; Max-Age=1296000"; // 15 Days
+  
+  // Helper to set cookie based on "Remember Me"
+  const setSession = (headers: Headers, username: string, remember: boolean) => {
+      const maxAge = remember ? "Max-Age=1296000" : ""; // 15 Days or Session
+      headers.set("Set-Cookie", `user=${username}; Path=/; HttpOnly; ${maxAge}`);
+  };
 
   if (req.method === "POST" && url.pathname === "/register") {
     const form = await req.formData();
     const username = form.get("username")?.toString();
     const password = form.get("password")?.toString();
+    const remember = form.get("remember") === "on";
 
     if (!username || !password) return Response.redirect(url.origin + "/?error=missing_fields");
 
@@ -23,7 +29,7 @@ serve(async (req) => {
     await kv.set(["users", username], { password, balance: 0 });
     
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
+    setSession(headers, username, remember);
     return new Response(null, { status: 303, headers });
   }
 
@@ -31,6 +37,7 @@ serve(async (req) => {
     const form = await req.formData();
     const username = form.get("username")?.toString();
     const password = form.get("password")?.toString();
+    const remember = form.get("remember") === "on";
 
     const userEntry = await kv.get(["users", username]);
     const userData = userEntry.value as any;
@@ -40,7 +47,7 @@ serve(async (req) => {
     }
 
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
+    setSession(headers, username, remember);
     return new Response(null, { status: 303, headers });
   }
 
@@ -56,8 +63,27 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. BETTING LOGIC
+  // 2. USER PROFILE ACTIONS
   // =========================
+  
+  // Change Password
+  if (req.method === "POST" && url.pathname === "/change_password" && currentUser) {
+      const form = await req.formData();
+      const newPass = form.get("new_password")?.toString();
+      
+      if (newPass) {
+          const userEntry = await kv.get(["users", currentUser]);
+          const userData = userEntry.value as any;
+          await kv.set(["users", currentUser], { ...userData, password: newPass });
+          return Response.redirect(url.origin + "/profile?status=pass_changed");
+      }
+      return Response.redirect(url.origin + "/profile?status=error");
+  }
+
+  // =========================
+  // 3. BETTING LOGIC
+  // =========================
+  // Clear History
   if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
       const iter = kv.list({ prefix: ["bets"] });
       let deletedCount = 0;
@@ -71,6 +97,7 @@ serve(async (req) => {
       return new Response(JSON.stringify({ status: "cleared", count: deletedCount }), { headers: { "content-type": "application/json" } });
   }
 
+  // Place Bet
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
     const now = new Date();
     const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
@@ -141,7 +168,7 @@ serve(async (req) => {
   }
 
   // =========================
-  // 3. ADMIN LOGIC
+  // 4. ADMIN LOGIC
   // =========================
   if (isAdmin && req.method === "POST") {
     if (url.pathname === "/admin/topup") {
@@ -152,7 +179,17 @@ serve(async (req) => {
         const userEntry = await kv.get(["users", targetUser]);
         const userData = userEntry.value as any;
         if(userData) {
+            // Update Balance
             await kv.set(["users", targetUser], { ...userData, balance: (userData.balance || 0) + amount });
+            
+            // Log Transaction
+            const timeString = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" });
+            await kv.set(["transactions", Date.now().toString()], {
+                user: targetUser,
+                amount: amount,
+                type: "TOPUP",
+                time: timeString
+            });
         }
       }
       return new Response(null, { status: 303, headers: { "Location": "/" } });
@@ -237,12 +274,11 @@ serve(async (req) => {
   }
 
   // =========================
-  // 4. UI RENDERING
+  // 5. UI RENDERING
   // =========================
   const commonHead = `
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
@@ -255,13 +291,11 @@ serve(async (req) => {
         .tab-active { background-color: #4a3b32; color: white; }
         .tab-inactive { background-color: #eee; color: #666; }
         
-        /* ACTION LOADER */
         #app-loader { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 9999; display: flex; justify-content: center; align-items: center; transition: opacity 0.3s ease; }
         .spinner { width: 50px; height: 50px; border: 5px solid #fff; border-bottom-color: transparent; border-radius: 50%; animation: rotation 1s linear infinite; }
         @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .hidden-loader { opacity: 0; pointer-events: none; }
         
-        /* SPLASH SCREEN */
         #splash-screen { position: fixed; inset: 0; background-color: #4a3b32; z-index: 10000; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.7s ease-out; }
         .splash-logo { width: 100px; height: 100px; margin-bottom: 20px; animation: bounce 2s infinite; }
         @keyframes bounce { 0%, 100% { transform: translateY(-10%); } 50% { transform: translateY(0); } }
@@ -269,53 +303,25 @@ serve(async (req) => {
         .loading-progress { height: 100%; background: #fbbf24; width: 50%; animation: loading 2s infinite ease-in-out; }
         @keyframes loading { 0% { transform: translateX(-100%); } 100% { transform: translateX(200%); } }
 
-        /* SCROLLBAR & VOUCHER */
         .history-scroll::-webkit-scrollbar { width: 4px; }
         .history-scroll::-webkit-scrollbar-track { background: #f1f1f1; }
         .history-scroll::-webkit-scrollbar-thumb { background: #888; border-radius: 2px; }
-        .voucher-container { background: white; color: #333; padding: 20px; border-radius: 10px; position: relative; }
-        .voucher-header { text-align: center; border-bottom: 2px dashed #ddd; padding-bottom: 15px; margin-bottom: 15px; }
-        .voucher-body { max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 14px; }
-        .voucher-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
-        .voucher-total { border-top: 2px dashed #ddd; padding-top: 10px; margin-top: 10px; display: flex; justify-content: space-between; font-weight: bold; font-size: 16px; }
-        .stamp { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-15deg); font-size: 3rem; color: rgba(74, 59, 50, 0.2); font-weight: bold; border: 3px solid rgba(74, 59, 50, 0.2); padding: 5px 20px; border-radius: 10px; pointer-events: none; }
         
-        /* BLUE TIP ANIMATION */
+        /* VIP TIP */
         .animate-gradient-x { background-size: 200% 200%; animation: gradient-move 3s ease infinite; }
         @keyframes gradient-move { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
         .text-shadow { text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
     </style>
     <script>
-        // APP LOADER & SPLASH LOGIC
-        window.addEventListener('load', () => { 
-            const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); 
-            
-            // SPLASH TIMEOUT
-            setTimeout(() => {
-                const splash = document.getElementById('splash-screen');
-                if(splash) {
-                    splash.style.opacity = '0';
-                    setTimeout(() => splash.style.display = 'none', 700);
-                }
-            }, 2000); // Show splash for 2 seconds
-        });
+        window.addEventListener('load', () => { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); setTimeout(() => { const s = document.getElementById('splash-screen'); if(s) { s.style.opacity='0'; setTimeout(()=>s.style.display='none',700); } }, 1500); });
         function showLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.remove('hidden-loader'); }
         function hideLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); }
     </script>
   `;
-  
   const loaderHTML = `<div id="app-loader"><div class="spinner"></div></div>`;
-  
-  // 2. SPLASH SCREEN HTML
-  const splashHTML = `
-    <div id="splash-screen">
-        <img src="https://img.icons8.com/color/144/shop.png" class="splash-logo">
-        <h1 class="text-3xl font-bold text-white tracking-[5px] mb-6">MYANMAR 2D</h1>
-        <div class="loading-bar"><div class="loading-progress"></div></div>
-        <p class="text-xs text-white/50 mt-4 uppercase tracking-wider">Loading System...</p>
-    </div>
-  `;
+  const splashHTML = `<div id="splash-screen"><img src="https://img.icons8.com/color/144/shop.png" class="splash-logo"><h1 class="text-3xl font-bold text-white tracking-[5px] mb-6">MYANMAR 2D</h1><div class="loading-bar"><div class="loading-progress"></div></div><p class="text-xs text-white/50 mt-4 uppercase tracking-wider">Loading System...</p></div>`;
 
+  // LOGIN PAGE
   if (!currentUser) {
     return new Response(`
       <!DOCTYPE html>
@@ -334,11 +340,18 @@ serve(async (req) => {
           <form id="loginForm" action="/login" method="POST" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
+            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer">
+                <input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)
+            </label>
             <button class="bg-[#4a3b32] text-white font-bold w-full py-3 rounded-lg hover:bg-[#3d3029]">Login</button>
           </form>
+          
           <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="New Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="New Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
+            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer">
+                <input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)
+            </label>
             <button class="bg-[#d97736] text-white font-bold w-full py-3 rounded-lg hover:bg-[#b5602b]">Create Account</button>
           </form>
         </div>
@@ -352,8 +365,91 @@ serve(async (req) => {
       </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
+  // DATA FETCHING FOR DASHBOARD/PROFILE
   const userEntry = await kv.get(["users", currentUser]);
   const balance = (userEntry.value as any)?.balance || 0;
+
+  // NEW ROUTE: PROFILE PAGE
+  if (url.pathname === "/profile") {
+      // Fetch user transactions
+      const transactions = [];
+      const txIter = kv.list({ prefix: ["transactions"] }, { reverse: true, limit: 50 });
+      for await (const entry of txIter) {
+          const tx = entry.value as any;
+          if (tx.user === currentUser) transactions.push(tx);
+      }
+
+      return new Response(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head><title>Profile</title>${commonHead}</head>
+        <body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">
+          ${loaderHTML}
+          <div class="bg-[#4a3b32] text-white p-6 rounded-b-3xl shadow-lg text-center relative">
+             <a href="/" onclick="showLoader()" class="absolute left-4 top-4 text-white/80 text-2xl"><i class="fas fa-arrow-left"></i></a>
+             <div class="w-20 h-20 mx-auto bg-white rounded-full flex items-center justify-center text-[#4a3b32] text-4xl font-bold border-4 border-white/20 mb-2">
+                <i class="fas fa-user"></i>
+             </div>
+             <h1 class="text-xl font-bold uppercase">${currentUser}</h1>
+             <p class="text-white/70 text-sm">${balance.toLocaleString()} Ks</p>
+          </div>
+
+          <div class="p-4 space-y-4">
+             <div class="bg-white p-4 rounded-xl shadow-sm">
+                <h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-lock text-yellow-500 mr-2"></i>Change Password</h3>
+                <form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2">
+                    <input type="password" name="new_password" placeholder="New Password" class="flex-1 border rounded p-2 text-sm" required>
+                    <button class="bg-[#4a3b32] text-white px-4 py-2 rounded text-sm font-bold">Save</button>
+                </form>
+             </div>
+
+             <div class="bg-white p-4 rounded-xl shadow-sm">
+                <h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin</h3>
+                <div class="grid grid-cols-2 gap-2">
+                    <div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100">
+                        <img src="https://img.icons8.com/color/48/k-pay.png" class="w-8 h-8 mx-auto mb-1">
+                        <div class="text-xs text-gray-500 font-bold">KPay</div>
+                        <div class="text-sm font-bold text-blue-800">09-123456789</div>
+                        <div class="text-[10px] text-gray-400">Mg Admin</div>
+                    </div>
+                    <div class="bg-yellow-50 p-3 rounded-lg text-center border border-yellow-100">
+                        <img src="https://img.icons8.com/fluency/48/wave-money.png" class="w-8 h-8 mx-auto mb-1">
+                        <div class="text-xs text-gray-500 font-bold">Wave</div>
+                        <div class="text-sm font-bold text-yellow-800">09-987654321</div>
+                        <div class="text-[10px] text-gray-400">Mg Admin</div>
+                    </div>
+                    <a href="https://t.me/username" target="_blank" class="col-span-2 bg-blue-500 text-white p-3 rounded-lg text-center font-bold flex items-center justify-center gap-2 hover:bg-blue-600">
+                        <i class="fab fa-telegram text-2xl"></i> Contact on Telegram
+                    </a>
+                </div>
+             </div>
+
+             <div class="bg-white p-4 rounded-xl shadow-sm">
+                <h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-history text-green-500 mr-2"></i>Transaction History</h3>
+                <div class="space-y-2 h-60 overflow-y-auto history-scroll">
+                    ${transactions.length === 0 ? '<div class="text-center text-gray-400 text-xs py-4">No transactions yet</div>' : ''}
+                    ${transactions.map(tx => `
+                        <div class="flex justify-between items-center p-2 bg-gray-50 rounded border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}">
+                            <div>
+                                <div class="text-sm font-bold text-gray-700">${tx.type}</div>
+                                <div class="text-xs text-gray-400">${tx.time}</div>
+                            </div>
+                            <div class="font-bold text-gray-700">+${tx.amount.toLocaleString()}</div>
+                        </div>
+                    `).join('')}
+                </div>
+             </div>
+          </div>
+          <script>
+             const p = new URLSearchParams(window.location.search);
+             if(p.get('status')==='pass_changed') Swal.fire('Success', 'Password Changed Successfully!', 'success');
+             if(p.get('status')==='error') Swal.fire('Error', 'Something went wrong', 'error');
+          </script>
+        </body></html>
+      `, { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
+  // MAIN DASHBOARD
   const bets = [];
   const iter = kv.list({ prefix: ["bets"] }, { reverse: true, limit: 50 });
   for await (const entry of iter) {
@@ -378,10 +474,13 @@ serve(async (req) => {
     <html lang="en">
     <head><title>Myanmar 2D</title>${commonHead}</head>
     <body class="max-w-md mx-auto min-h-screen bg-gray-100 pb-10 text-gray-800">
-      ${splashHTML}
       ${loaderHTML}
+      ${splashHTML}
+      
       <nav class="bg-theme h-14 flex justify-between items-center px-4 text-white shadow-md sticky top-0 z-50">
-        <div class="font-bold text-lg uppercase tracking-wider"><i class="fas fa-user-circle mr-2"></i>${currentUser}</div>
+        <a href="/profile" onclick="showLoader()" class="font-bold text-lg uppercase tracking-wider flex items-center gap-2">
+            <i class="fas fa-user-circle text-2xl"></i> ${currentUser}
+        </a>
         <div class="flex gap-4 items-center">
            <div class="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full border border-white/20">
              <i class="fas fa-wallet text-xs text-yellow-400"></i><span id="navBalance" class="text-sm font-bold">${balance.toLocaleString()} Ks</span>
