@@ -6,20 +6,14 @@ serve(async (req) => {
   const url = new URL(req.url);
   
   // =========================
-  // 1. AUTH (Login/Register)
+  // 1. AUTH
   // =========================
-  
-  // Helper to set cookie based on "Remember Me"
-  const setSession = (headers: Headers, username: string, remember: boolean) => {
-      const maxAge = remember ? "Max-Age=1296000" : ""; // 15 Days or Session
-      headers.set("Set-Cookie", `user=${username}; Path=/; HttpOnly; ${maxAge}`);
-  };
+  const cookieOptions = "; Path=/; HttpOnly; Max-Age=1296000"; 
 
   if (req.method === "POST" && url.pathname === "/register") {
     const form = await req.formData();
     const username = form.get("username")?.toString();
     const password = form.get("password")?.toString();
-    const remember = form.get("remember") === "on";
 
     if (!username || !password) return Response.redirect(url.origin + "/?error=missing_fields");
 
@@ -29,7 +23,7 @@ serve(async (req) => {
     await kv.set(["users", username], { password, balance: 0 });
     
     const headers = new Headers({ "Location": "/" });
-    setSession(headers, username, remember);
+    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
     return new Response(null, { status: 303, headers });
   }
 
@@ -37,7 +31,6 @@ serve(async (req) => {
     const form = await req.formData();
     const username = form.get("username")?.toString();
     const password = form.get("password")?.toString();
-    const remember = form.get("remember") === "on";
 
     const userEntry = await kv.get(["users", username]);
     const userData = userEntry.value as any;
@@ -47,7 +40,7 @@ serve(async (req) => {
     }
 
     const headers = new Headers({ "Location": "/" });
-    setSession(headers, username, remember);
+    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
     return new Response(null, { status: 303, headers });
   }
 
@@ -63,14 +56,12 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. USER PROFILE ACTIONS
+  // 2. PROFILE & CONTACT DATA
   // =========================
   
-  // Change Password
   if (req.method === "POST" && url.pathname === "/change_password" && currentUser) {
       const form = await req.formData();
       const newPass = form.get("new_password")?.toString();
-      
       if (newPass) {
           const userEntry = await kv.get(["users", currentUser]);
           const userData = userEntry.value as any;
@@ -80,10 +71,6 @@ serve(async (req) => {
       return Response.redirect(url.origin + "/profile?status=error");
   }
 
-  // =========================
-  // 3. BETTING LOGIC
-  // =========================
-  // Clear History
   if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
       const iter = kv.list({ prefix: ["bets"] });
       let deletedCount = 0;
@@ -97,7 +84,6 @@ serve(async (req) => {
       return new Response(JSON.stringify({ status: "cleared", count: deletedCount }), { headers: { "content-type": "application/json" } });
   }
 
-  // Place Bet
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
     const now = new Date();
     const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
@@ -168,7 +154,7 @@ serve(async (req) => {
   }
 
   // =========================
-  // 4. ADMIN LOGIC
+  // 3. ADMIN LOGIC
   // =========================
   if (isAdmin && req.method === "POST") {
     if (url.pathname === "/admin/topup") {
@@ -179,16 +165,10 @@ serve(async (req) => {
         const userEntry = await kv.get(["users", targetUser]);
         const userData = userEntry.value as any;
         if(userData) {
-            // Update Balance
             await kv.set(["users", targetUser], { ...userData, balance: (userData.balance || 0) + amount });
-            
-            // Log Transaction
-            const timeString = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" });
+            // Log
             await kv.set(["transactions", Date.now().toString()], {
-                user: targetUser,
-                amount: amount,
-                type: "TOPUP",
-                time: timeString
+                user: targetUser, amount: amount, type: "TOPUP", time: new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon" })
             });
         }
       }
@@ -207,6 +187,22 @@ serve(async (req) => {
                 await kv.set(["users", targetUser], { ...userData, password: newPass });
             }
         }
+        return new Response(null, { status: 303, headers: { "Location": "/" } });
+    }
+
+    // UPDATE CONTACT INFO
+    if (url.pathname === "/admin/contact") {
+        const form = await req.formData();
+        const contactData = {
+            kpay_name: form.get("kpay_name") || "Admin",
+            kpay_no: form.get("kpay_no") || "09-",
+            kpay_img: form.get("kpay_img") || "",
+            wave_name: form.get("wave_name") || "Admin",
+            wave_no: form.get("wave_no") || "09-",
+            wave_img: form.get("wave_img") || "",
+            tele_link: form.get("tele_link") || "#"
+        };
+        await kv.set(["system", "contact"], contactData);
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
 
@@ -274,7 +270,7 @@ serve(async (req) => {
   }
 
   // =========================
-  // 5. UI RENDERING
+  // 4. UI RENDERING
   // =========================
   const commonHead = `
     <meta charset="UTF-8">
@@ -290,24 +286,25 @@ serve(async (req) => {
         .card-gradient { background: linear-gradient(135deg, #5d4037 0%, #3e2723 100%); }
         .tab-active { background-color: #4a3b32; color: white; }
         .tab-inactive { background-color: #eee; color: #666; }
-        
         #app-loader { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 9999; display: flex; justify-content: center; align-items: center; transition: opacity 0.3s ease; }
         .spinner { width: 50px; height: 50px; border: 5px solid #fff; border-bottom-color: transparent; border-radius: 50%; animation: rotation 1s linear infinite; }
         @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .hidden-loader { opacity: 0; pointer-events: none; }
-        
         #splash-screen { position: fixed; inset: 0; background-color: #4a3b32; z-index: 10000; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.7s ease-out; }
         .splash-logo { width: 100px; height: 100px; margin-bottom: 20px; animation: bounce 2s infinite; }
         @keyframes bounce { 0%, 100% { transform: translateY(-10%); } 50% { transform: translateY(0); } }
         .loading-bar { width: 150px; height: 4px; background: rgba(255,255,255,0.2); border-radius: 2px; overflow: hidden; }
         .loading-progress { height: 100%; background: #fbbf24; width: 50%; animation: loading 2s infinite ease-in-out; }
         @keyframes loading { 0% { transform: translateX(-100%); } 100% { transform: translateX(200%); } }
-
         .history-scroll::-webkit-scrollbar { width: 4px; }
         .history-scroll::-webkit-scrollbar-track { background: #f1f1f1; }
         .history-scroll::-webkit-scrollbar-thumb { background: #888; border-radius: 2px; }
-        
-        /* VIP TIP */
+        .voucher-container { background: white; color: #333; padding: 20px; border-radius: 10px; position: relative; }
+        .voucher-header { text-align: center; border-bottom: 2px dashed #ddd; padding-bottom: 15px; margin-bottom: 15px; }
+        .voucher-body { max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 14px; }
+        .voucher-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
+        .voucher-total { border-top: 2px dashed #ddd; padding-top: 10px; margin-top: 10px; display: flex; justify-content: space-between; font-weight: bold; font-size: 16px; }
+        .stamp { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-15deg); font-size: 3rem; color: rgba(74, 59, 50, 0.2); font-weight: bold; border: 3px solid rgba(74, 59, 50, 0.2); padding: 5px 20px; border-radius: 10px; pointer-events: none; }
         .animate-gradient-x { background-size: 200% 200%; animation: gradient-move 3s ease infinite; }
         @keyframes gradient-move { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
         .text-shadow { text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
@@ -321,15 +318,13 @@ serve(async (req) => {
   const loaderHTML = `<div id="app-loader"><div class="spinner"></div></div>`;
   const splashHTML = `<div id="splash-screen"><img src="https://img.icons8.com/color/144/shop.png" class="splash-logo"><h1 class="text-3xl font-bold text-white tracking-[5px] mb-6">MYANMAR 2D</h1><div class="loading-bar"><div class="loading-progress"></div></div><p class="text-xs text-white/50 mt-4 uppercase tracking-wider">Loading System...</p></div>`;
 
-  // LOGIN PAGE
   if (!currentUser) {
     return new Response(`
       <!DOCTYPE html>
       <html lang="en">
       <head><title>Welcome</title>${commonHead}</head>
       <body class="h-screen flex items-center justify-center px-4 bg-[#4a3b32]">
-        ${splashHTML}
-        ${loaderHTML}
+        ${splashHTML} ${loaderHTML}
         <div class="bg-white text-gray-800 p-6 rounded-xl w-full max-w-sm shadow-2xl text-center">
           <img src="https://img.icons8.com/color/96/shop.png" class="mx-auto mb-4 w-16">
           <h1 class="text-2xl font-bold mb-6 text-[#4a3b32]">Myanmar 2D Live</h1>
@@ -345,7 +340,6 @@ serve(async (req) => {
             </label>
             <button class="bg-[#4a3b32] text-white font-bold w-full py-3 rounded-lg hover:bg-[#3d3029]">Login</button>
           </form>
-          
           <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="New Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="New Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
@@ -365,19 +359,22 @@ serve(async (req) => {
       </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
-  // DATA FETCHING FOR DASHBOARD/PROFILE
   const userEntry = await kv.get(["users", currentUser]);
   const balance = (userEntry.value as any)?.balance || 0;
 
-  // NEW ROUTE: PROFILE PAGE
+  // PROFILE PAGE
   if (url.pathname === "/profile") {
-      // Fetch user transactions
+      // Fetch Transactions
       const transactions = [];
       const txIter = kv.list({ prefix: ["transactions"] }, { reverse: true, limit: 50 });
       for await (const entry of txIter) {
           const tx = entry.value as any;
           if (tx.user === currentUser) transactions.push(tx);
       }
+      
+      // Fetch Contact Info
+      const contactEntry = await kv.get(["system", "contact"]);
+      const contact = contactEntry.value as any || { kpay_no: "09-", kpay_name: "Admin", wave_no: "09-", wave_name: "Admin", tele_link: "#", kpay_img: "", wave_img: "" };
 
       return new Response(`
         <!DOCTYPE html>
@@ -404,21 +401,21 @@ serve(async (req) => {
              </div>
 
              <div class="bg-white p-4 rounded-xl shadow-sm">
-                <h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin</h3>
+                <h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin (ငွေဖြည့်ရန်)</h3>
                 <div class="grid grid-cols-2 gap-2">
-                    <div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100">
-                        <img src="https://img.icons8.com/color/48/k-pay.png" class="w-8 h-8 mx-auto mb-1">
+                    <div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100 relative overflow-hidden">
+                        <img src="${contact.kpay_img || 'https://img.icons8.com/color/48/k-pay.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full">
                         <div class="text-xs text-gray-500 font-bold">KPay</div>
-                        <div class="text-sm font-bold text-blue-800">09-123456789</div>
-                        <div class="text-[10px] text-gray-400">Mg Admin</div>
+                        <div class="text-sm font-bold text-blue-800 select-all">${contact.kpay_no}</div>
+                        <div class="text-[10px] text-gray-400">${contact.kpay_name}</div>
                     </div>
-                    <div class="bg-yellow-50 p-3 rounded-lg text-center border border-yellow-100">
-                        <img src="https://img.icons8.com/fluency/48/wave-money.png" class="w-8 h-8 mx-auto mb-1">
+                    <div class="bg-yellow-50 p-3 rounded-lg text-center border border-yellow-100 relative overflow-hidden">
+                        <img src="${contact.wave_img || 'https://img.icons8.com/fluency/48/wave-money.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full">
                         <div class="text-xs text-gray-500 font-bold">Wave</div>
-                        <div class="text-sm font-bold text-yellow-800">09-987654321</div>
-                        <div class="text-[10px] text-gray-400">Mg Admin</div>
+                        <div class="text-sm font-bold text-yellow-800 select-all">${contact.wave_no}</div>
+                        <div class="text-[10px] text-gray-400">${contact.wave_name}</div>
                     </div>
-                    <a href="https://t.me/username" target="_blank" class="col-span-2 bg-blue-500 text-white p-3 rounded-lg text-center font-bold flex items-center justify-center gap-2 hover:bg-blue-600">
+                    <a href="${contact.tele_link}" target="_blank" class="col-span-2 bg-blue-500 text-white p-3 rounded-lg text-center font-bold flex items-center justify-center gap-2 hover:bg-blue-600">
                         <i class="fab fa-telegram text-2xl"></i> Contact on Telegram
                     </a>
                 </div>
@@ -430,13 +427,9 @@ serve(async (req) => {
                     ${transactions.length === 0 ? '<div class="text-center text-gray-400 text-xs py-4">No transactions yet</div>' : ''}
                     ${transactions.map(tx => `
                         <div class="flex justify-between items-center p-2 bg-gray-50 rounded border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}">
-                            <div>
-                                <div class="text-sm font-bold text-gray-700">${tx.type}</div>
-                                <div class="text-xs text-gray-400">${tx.time}</div>
-                            </div>
+                            <div><div class="text-sm font-bold text-gray-700">${tx.type}</div><div class="text-xs text-gray-400">${tx.time}</div></div>
                             <div class="font-bold text-gray-700">+${tx.amount.toLocaleString()}</div>
-                        </div>
-                    `).join('')}
+                        </div>`).join('')}
                 </div>
              </div>
           </div>
@@ -449,7 +442,6 @@ serve(async (req) => {
       `, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
-  // MAIN DASHBOARD
   const bets = [];
   const iter = kv.list({ prefix: ["bets"] }, { reverse: true, limit: 50 });
   for await (const entry of iter) {
@@ -468,19 +460,19 @@ serve(async (req) => {
 
   const tipEntry = await kv.get(["system", "tip"]);
   const dailyTip = tipEntry.value || "";
+  
+  // Fetch Contact for Admin Form Pre-fill
+  const contactEntry = await kv.get(["system", "contact"]);
+  const contact = contactEntry.value as any || { kpay_no: "", kpay_name: "", wave_no: "", wave_name: "", tele_link: "", kpay_img: "", wave_img: "" };
 
   return new Response(`
     <!DOCTYPE html>
     <html lang="en">
     <head><title>Myanmar 2D</title>${commonHead}</head>
     <body class="max-w-md mx-auto min-h-screen bg-gray-100 pb-10 text-gray-800">
-      ${loaderHTML}
-      ${splashHTML}
-      
+      ${loaderHTML} ${splashHTML}
       <nav class="bg-theme h-14 flex justify-between items-center px-4 text-white shadow-md sticky top-0 z-50">
-        <a href="/profile" onclick="showLoader()" class="font-bold text-lg uppercase tracking-wider flex items-center gap-2">
-            <i class="fas fa-user-circle text-2xl"></i> ${currentUser}
-        </a>
+        <a href="/profile" onclick="showLoader()" class="font-bold text-lg uppercase tracking-wider flex items-center gap-2"><i class="fas fa-user-circle text-2xl"></i> ${currentUser}</a>
         <div class="flex gap-4 items-center">
            <div class="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full border border-white/20">
              <i class="fas fa-wallet text-xs text-yellow-400"></i><span id="navBalance" class="text-sm font-bold">${balance.toLocaleString()} Ks</span>
@@ -491,281 +483,91 @@ serve(async (req) => {
 
       <div class="p-4">
         <div class="card-gradient rounded-2xl p-6 text-center text-white shadow-lg relative overflow-hidden">
-          <div class="flex justify-between items-center mb-2 text-gray-300 text-sm">
-             <span id="live_date">Today</span><span class="flex items-center gap-1"><i class="fas fa-circle text-green-500 text-[10px]"></i> Live</span>
-          </div>
-          <div class="py-2">
-            <div id="live_twod" class="text-8xl font-bold tracking-tighter drop-shadow-md">--</div>
-            <div class="text-sm mt-2 opacity-80">Update: <span id="live_time">--:--:--</span></div>
-          </div>
+          <div class="flex justify-between items-center mb-2 text-gray-300 text-sm"><span id="live_date">Today</span><span class="flex items-center gap-1"><i class="fas fa-circle text-green-500 text-[10px]"></i> Live</span></div>
+          <div class="py-2"><div id="live_twod" class="text-8xl font-bold tracking-tighter drop-shadow-md">--</div><div class="text-sm mt-2 opacity-80">Update: <span id="live_time">--:--:--</span></div></div>
         </div>
       </div>
 
-      ${dailyTip ? `
-      <div class="px-4 mb-4">
-        <div class="relative overflow-hidden rounded-2xl shadow-lg transform transition hover:scale-105 duration-300">
-            <div class="absolute inset-0 bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-600 animate-gradient-x"></div>
-            <div class="relative p-1 bg-gradient-to-r from-cyan-300 to-blue-400 rounded-2xl">
-                <div class="bg-white/10 backdrop-blur-sm rounded-xl p-4 text-center border border-white/30">
-                    <div class="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
-                        <span class="bg-white text-blue-600 px-3 py-1 rounded-full text-xs font-bold shadow-md uppercase tracking-wider flex items-center gap-1">
-                            <i class="fas fa-crown text-yellow-500"></i> VIP TIP <i class="fas fa-crown text-yellow-500"></i>
-                        </span>
-                    </div>
-                    <div class="mt-2">
-                        <p class="text-white text-shadow font-bold text-lg tracking-wide drop-shadow-md">${dailyTip}</p>
-                        <div class="mt-1 text-[10px] text-white/80 uppercase font-bold tracking-widest">Good Luck Today!</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-      </div>` : ''}
+      ${dailyTip ? `<div class="px-4 mb-4"><div class="relative overflow-hidden rounded-2xl shadow-lg transform transition hover:scale-105 duration-300"><div class="absolute inset-0 bg-gradient-to-r from-cyan-400 via-blue-500 to-indigo-600 animate-gradient-x"></div><div class="relative p-1 bg-gradient-to-r from-cyan-300 to-blue-400 rounded-2xl"><div class="bg-white/10 backdrop-blur-sm rounded-xl p-4 text-center border border-white/30"><div class="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2"><span class="bg-white text-blue-600 px-3 py-1 rounded-full text-xs font-bold shadow-md uppercase tracking-wider flex items-center gap-1"><i class="fas fa-crown text-yellow-500"></i> VIP TIP <i class="fas fa-crown text-yellow-500"></i></span></div><div class="mt-2"><p class="text-white text-shadow font-bold text-lg tracking-wide drop-shadow-md">${dailyTip}</p><div class="mt-1 text-[10px] text-white/80 uppercase font-bold tracking-widest">Good Luck Today!</div></div></div></div></div></div>` : ''}
 
-      ${!isAdmin ? `
-        <div class="px-4 mb-4">
-          <button onclick="openBetModal()" class="w-full bg-theme text-white py-3 rounded-xl font-bold shadow-lg flex justify-center items-center gap-2 hover:bg-[#3d3029]">
-            <i class="fas fa-plus-circle"></i> Place Bet (ထိုးမည်)
-          </button>
-        </div>` : ''}
+      ${!isAdmin ? `<div class="px-4 mb-4"><button onclick="openBetModal()" class="w-full bg-theme text-white py-3 rounded-xl font-bold shadow-lg flex justify-center items-center gap-2 hover:bg-[#3d3029]"><i class="fas fa-plus-circle"></i> Place Bet (ထိုးမည်)</button></div>` : ''}
 
       ${isAdmin ? `
         <div class="px-4 mb-4 space-y-4">
            <div class="bg-white p-4 rounded shadow border-l-4 border-red-500">
              <h3 class="font-bold text-red-600 mb-2">Money & Payout</h3>
              <form action="/admin/topup" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2">
-               <input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm">
-               <input name="amount" placeholder="Amt" type="number" class="w-1/3 border rounded p-1 text-sm">
-               <button class="bg-green-600 text-white w-1/3 rounded text-xs font-bold">Topup</button>
+               <input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm"><input name="amount" placeholder="Amt" type="number" class="w-1/3 border rounded p-1 text-sm"><button class="bg-green-600 text-white w-1/3 rounded text-xs font-bold">Topup</button>
              </form>
              <form action="/admin/payout" method="POST" onsubmit="showLoader()" class="flex flex-col gap-2 border-t pt-2">
-                <div class="flex gap-2">
-                   <select name="session" class="w-1/3 border rounded p-1 bg-gray-50 text-xs font-bold">
-                      <option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option>
-                   </select>
-                   <input name="win_number" placeholder="Win No" class="w-1/3 border rounded p-1 text-center font-bold">
-                   <button class="bg-red-600 text-white w-1/3 rounded text-xs font-bold">PAYOUT</button>
-                </div>
+                <div class="flex gap-2"><select name="session" class="w-1/3 border rounded p-1 bg-gray-50 text-xs font-bold"><option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option></select><input name="win_number" placeholder="Win No" class="w-1/3 border rounded p-1 text-center font-bold"><button class="bg-red-600 text-white w-1/3 rounded text-xs font-bold">PAYOUT</button></div>
+             </form>
+           </div>
+           
+           <div class="bg-white p-4 rounded shadow border-l-4 border-green-500">
+             <h3 class="font-bold text-green-600 mb-2">Payment Settings (ငွေလက်ခံ)</h3>
+             <form action="/admin/contact" method="POST" onsubmit="showLoader()" class="grid grid-cols-2 gap-2">
+                <input name="kpay_no" value="${contact.kpay_no}" placeholder="KPay No" class="border rounded p-1 text-sm">
+                <input name="kpay_name" value="${contact.kpay_name}" placeholder="KPay Name" class="border rounded p-1 text-sm">
+                <input name="kpay_img" value="${contact.kpay_img}" placeholder="KPay Img URL (Optional)" class="col-span-2 border rounded p-1 text-sm">
+                
+                <input name="wave_no" value="${contact.wave_no}" placeholder="Wave No" class="border rounded p-1 text-sm">
+                <input name="wave_name" value="${contact.wave_name}" placeholder="Wave Name" class="border rounded p-1 text-sm">
+                <input name="wave_img" value="${contact.wave_img}" placeholder="Wave Img URL (Optional)" class="col-span-2 border rounded p-1 text-sm">
+                
+                <input name="tele_link" value="${contact.tele_link}" placeholder="Telegram Link" class="col-span-2 border rounded p-1 text-sm">
+                <button class="col-span-2 bg-green-600 text-white rounded py-1 text-xs font-bold">UPDATE INFO</button>
              </form>
            </div>
 
            <div class="bg-white p-4 rounded shadow border-l-4 border-blue-500">
-             <h3 class="font-bold text-blue-600 mb-2">Lucky Tip (ဘိုးတော်အကွက်)</h3>
-             <form action="/admin/tip" method="POST" onsubmit="showLoader()" class="flex gap-2">
-                <input name="tip" placeholder="Text (e.g. 45, 67 is hot)" class="flex-1 border rounded p-1 text-sm" value="${dailyTip}">
-                <button class="bg-blue-600 text-white px-3 rounded text-xs font-bold">UPDATE</button>
-             </form>
+             <h3 class="font-bold text-blue-600 mb-2">Lucky Tip</h3>
+             <form action="/admin/tip" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="tip" placeholder="Tip text" class="flex-1 border rounded p-1 text-sm" value="${dailyTip}"><button class="bg-blue-600 text-white px-3 rounded text-xs font-bold">UPDATE</button></form>
            </div>
-
            <div class="bg-white p-4 rounded shadow border-l-4 border-yellow-500">
-             <h3 class="font-bold text-yellow-600 mb-2">Reset Password (User မေ့ရင်)</h3>
-             <form action="/admin/reset_pass" method="POST" onsubmit="showLoader()" class="flex gap-2">
-                <input name="username" placeholder="Username" class="w-1/3 border rounded p-1 text-sm" required>
-                <input name="password" placeholder="New Password" class="w-1/3 border rounded p-1 text-sm" required>
-                <button class="bg-yellow-600 text-white w-1/3 rounded text-xs font-bold">RESET</button>
-             </form>
+             <h3 class="font-bold text-yellow-600 mb-2">Reset Password</h3>
+             <form action="/admin/reset_pass" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm" required><input name="password" placeholder="New Pass" class="w-1/3 border rounded p-1 text-sm" required><button class="bg-yellow-600 text-white w-1/3 rounded text-xs font-bold">RESET</button></form>
            </div>
-
            <div class="bg-white p-4 rounded shadow border-l-4 border-gray-600">
-             <h3 class="font-bold text-gray-600 mb-2">Manage Blocks</h3>
-             <form action="/admin/block" method="POST" onsubmit="showLoader()">
-                <input type="hidden" name="action" value="add">
-                <div class="flex gap-2 mb-2">
-                   <input name="block_val" type="number" placeholder="Num" class="w-1/2 border rounded p-2 text-center font-bold">
-                   <select name="block_type" class="w-1/2 border rounded p-2 text-xs font-bold">
-                      <option value="direct">Direct</option><option value="head">Head</option><option value="tail">Tail</option>
-                   </select>
-                </div>
-                <div class="flex gap-2">
-                    <button class="bg-gray-800 text-white flex-1 py-2 rounded text-xs font-bold">BLOCK</button>
-                    <button type="submit" formaction="/admin/block" name="action" value="clear" class="bg-red-500 text-white w-1/3 py-2 rounded text-xs font-bold">CLEAR</button>
-                </div>
-             </form>
-             <div class="mt-4 border-t pt-2">
-                 <label class="text-xs font-bold text-gray-400 mb-2 block">Blocked (${blockedCount}):</label>
-                 <div class="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
-                    ${blockedNumbers.map(n => `
-                        <form action="/admin/block" method="POST" style="display:inline;">
-                            <input type="hidden" name="action" value="unblock"><input type="hidden" name="block_val" value="${n}">
-                            <button class="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold border border-red-200 hover:bg-red-200 flex items-center gap-1">${n} <i class="fas fa-times-circle"></i></button>
-                        </form>`).join('')}
-                 </div>
-             </div>
+             <h3 class="font-bold text-gray-600 mb-2">Blocks</h3>
+             <form action="/admin/block" method="POST" onsubmit="showLoader()"><input type="hidden" name="action" value="add"><div class="flex gap-2 mb-2"><input name="block_val" type="number" placeholder="Num" class="w-1/2 border rounded p-2 text-center font-bold"><select name="block_type" class="w-1/2 border rounded p-2 text-xs font-bold"><option value="direct">Direct</option><option value="head">Head</option><option value="tail">Tail</option></select></div><div class="flex gap-2"><button class="bg-gray-800 text-white flex-1 py-2 rounded text-xs font-bold">BLOCK</button><button type="submit" formaction="/admin/block" name="action" value="clear" class="bg-red-500 text-white w-1/3 py-2 rounded text-xs font-bold">CLEAR</button></div></form>
+             <div class="mt-4 border-t pt-2"><label class="text-xs font-bold text-gray-400 mb-2 block">Blocked (${blockedCount}):</label><div class="flex flex-wrap gap-2 max-h-32 overflow-y-auto">${blockedNumbers.map(n => `<form action="/admin/block" method="POST" style="display:inline;"><input type="hidden" name="action" value="unblock"><input type="hidden" name="block_val" value="${n}"><button class="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold border border-red-200 hover:bg-red-200 flex items-center gap-1">${n} <i class="fas fa-times-circle"></i></button></form>`).join('')}</div></div>
            </div>
         </div>` : ''}
 
       <div class="px-4 space-y-3 mb-6">
-        <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-200 flex justify-between text-center">
-            <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">SET</div><div id="set_12" class="font-bold">--</div></div>
-            <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">VALUE</div><div id="val_12" class="font-bold">--</div></div>
-            <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">2D (12:01)</div><div id="res_12" class="text-xl font-bold text-theme">--</div></div>
-        </div>
-        <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-200 flex justify-between text-center">
-            <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">SET</div><div id="set_430" class="font-bold">--</div></div>
-            <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">VALUE</div><div id="val_430" class="font-bold">--</div></div>
-            <div class="w-1/3"><div class="text-xs text-gray-400 font-bold">2D (04:30)</div><div id="res_430" class="text-xl font-bold text-theme">--</div></div>
-        </div>
+        <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-200 flex justify-between text-center"><div class="w-1/3"><div class="text-xs text-gray-400 font-bold">SET</div><div id="set_12" class="font-bold">--</div></div><div class="w-1/3"><div class="text-xs text-gray-400 font-bold">VALUE</div><div id="val_12" class="font-bold">--</div></div><div class="w-1/3"><div class="text-xs text-gray-400 font-bold">2D (12:01)</div><div id="res_12" class="text-xl font-bold text-theme">--</div></div></div>
+        <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-200 flex justify-between text-center"><div class="w-1/3"><div class="text-xs text-gray-400 font-bold">SET</div><div id="set_430" class="font-bold">--</div></div><div class="w-1/3"><div class="text-xs text-gray-400 font-bold">VALUE</div><div id="val_430" class="font-bold">--</div></div><div class="w-1/3"><div class="text-xs text-gray-400 font-bold">2D (04:30)</div><div id="res_430" class="text-xl font-bold text-theme">--</div></div></div>
       </div>
 
       <div class="px-4">
-        <div class="flex justify-between items-center mb-2">
-            <h3 class="font-bold text-gray-500 text-sm uppercase tracking-wider">Betting History</h3>
-            <div class="flex gap-2">
-                <div class="relative">
-                    <input type="text" id="historySearch" onkeyup="filterHistory()" placeholder="Search..." class="border rounded-full px-3 py-1 text-xs focus:outline-none focus:border-yellow-500 w-24 text-center text-black">
-                </div>
-                <button onclick="confirmClearHistory()" class="bg-red-100 text-red-500 p-1 rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-200"><i class="fas fa-trash text-xs"></i></button>
-            </div>
-        </div>
-        <div id="historyList" class="space-y-2 h-80 overflow-y-auto history-scroll rounded-lg border border-gray-200 bg-white p-2 shadow-inner">
-          ${bets.map(b => `
-            <div class="history-item bg-gray-50 p-3 rounded border-l-4 ${b.status==='WIN'?'border-green-500':b.status==='LOSE'?'border-red-500':'border-yellow-500'} border-b shadow-sm flex justify-between items-center">
-              <div class="truncate w-2/3"><span class="bet-number text-lg font-bold text-gray-800 block truncate">${b.number}</span><span class="text-xs text-gray-400">${b.time}</span></div>
-              <div class="text-right"><div class="font-bold text-gray-700">${b.amount.toLocaleString()}</div><div class="text-[10px] font-bold uppercase ${b.status==='WIN'?'text-green-600':b.status==='LOSE'?'text-red-600':'text-yellow-600'}">${b.status}</div></div>
-            </div>`).join('')}
-          ${bets.length===0?'<div class="text-center text-gray-400 text-sm py-10">No betting history</div>':''}
-        </div>
+        <div class="flex justify-between items-center mb-2"><h3 class="font-bold text-gray-500 text-sm uppercase tracking-wider">Betting History</h3><div class="flex gap-2"><div class="relative"><input type="text" id="historySearch" onkeyup="filterHistory()" placeholder="Search..." class="border rounded-full px-3 py-1 text-xs focus:outline-none focus:border-yellow-500 w-24 text-center text-black"></div><button onclick="confirmClearHistory()" class="bg-red-100 text-red-500 p-1 rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-200"><i class="fas fa-trash text-xs"></i></button></div></div>
+        <div id="historyList" class="space-y-2 h-80 overflow-y-auto history-scroll rounded-lg border border-gray-200 bg-white p-2 shadow-inner">${bets.map(b => `<div class="history-item bg-gray-50 p-3 rounded border-l-4 ${b.status==='WIN'?'border-green-500':b.status==='LOSE'?'border-red-500':'border-yellow-500'} border-b shadow-sm flex justify-between items-center"><div class="truncate w-2/3"><span class="bet-number text-lg font-bold text-gray-800 block truncate">${b.number}</span><span class="text-xs text-gray-400">${b.time}</span></div><div class="text-right"><div class="font-bold text-gray-700">${b.amount.toLocaleString()}</div><div class="text-[10px] font-bold uppercase ${b.status==='WIN'?'text-green-600':b.status==='LOSE'?'text-red-600':'text-yellow-600'}">${b.status}</div></div></div>`).join('')}${bets.length===0?'<div class="text-center text-gray-400 text-sm py-10">No betting history</div>':''}</div>
       </div>
 
-      <div id="betModal" class="fixed inset-0 bg-black/90 hidden z-50 flex items-end justify-center sm:items-center">
-         <div class="bg-white w-full max-w-md rounded-t-2xl sm:rounded-xl p-4 h-auto flex flex-col">
-           <div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-theme">Betting</h2><button onclick="closeBetModal()" class="text-gray-500 text-2xl">&times;</button></div>
-           <div class="flex gap-2 mb-4 text-sm font-bold"><button onclick="setTab('direct')" id="btnDirect" class="flex-1 py-2 rounded tab-active">Direct</button><button onclick="setTab('quick')" id="btnQuick" class="flex-1 py-2 rounded tab-inactive">Quick</button></div>
-           <form id="betForm" onsubmit="placeBet(event)" class="flex-1 flex flex-col">
-             <div id="tabDirectContent">
-                <label class="text-xs text-gray-500 font-bold">Numbers (comma separated)</label>
-                <textarea id="numberInput" name="number" class="w-full h-20 border-2 border-gray-300 rounded-lg p-2 text-lg font-bold text-gray-700 focus:border-[#4a3b32] focus:outline-none" placeholder="Ex: 12, 34, 56"></textarea>
-             </div>
-             <div id="tabQuickContent" class="hidden space-y-2">
-                <div class="grid grid-cols-2 gap-2">
-                   <button type="button" onclick="quickBet('head')" class="bg-gray-200 p-2 rounded font-bold text-gray-700 hover:bg-gray-300">Head (ထိပ်)</button>
-                   <button type="button" onclick="quickBet('tail')" class="bg-gray-200 p-2 rounded font-bold text-gray-700 hover:bg-gray-300">Tail (နောက်)</button>
-                   <button type="button" onclick="quickBet('double')" class="bg-gray-200 p-2 rounded font-bold text-gray-700 hover:bg-gray-300">Double (အပူး)</button>
-                   <button type="button" onclick="quickBet('brake')" class="bg-gray-200 p-2 rounded font-bold text-gray-700 hover:bg-gray-300">Brake (R)</button>
-                </div>
-                <div id="quickInputArea" class="hidden mt-2 p-2 bg-yellow-50 rounded border border-yellow-200">
-                   <label id="quickLabel" class="text-xs font-bold text-gray-600 block mb-1">Enter Number:</label>
-                   <div class="flex gap-2">
-                     <input type="number" id="quickVal" class="flex-1 border rounded p-2 text-center font-bold">
-                     <button type="button" onclick="generateNumbers()" class="bg-theme text-white px-4 rounded font-bold">Add</button>
-                   </div>
-                </div>
-             </div>
-             <div class="mt-4">
-               <label class="text-xs text-gray-500 font-bold">Amount (Per Number)</label>
-               <input type="number" name="amount" class="w-full border-2 border-gray-300 rounded-lg p-2 text-xl font-bold text-center mb-4" required>
-               <button class="w-full bg-theme text-white py-3 rounded-lg font-bold text-lg">Confirm Bet</button>
-             </div>
-           </form>
-         </div>
-      </div>
-
-      <div id="voucherModal" class="fixed inset-0 bg-black/90 hidden z-[100] flex items-center justify-center p-4">
-         <div class="bg-white w-full max-w-sm rounded-lg overflow-hidden shadow-2xl relative">
-            <button onclick="document.getElementById('voucherModal').classList.add('hidden'); window.location.reload();" class="absolute top-2 right-3 text-gray-400 text-2xl">&times;</button>
-            <div id="voucherContent" class="p-4"></div>
-            <div class="bg-gray-100 p-3 text-center">
-                <button onclick="document.getElementById('voucherModal').classList.add('hidden'); window.location.reload();" class="bg-theme text-white w-full py-2 rounded font-bold">Close</button>
-            </div>
-         </div>
-      </div>
+      <div id="betModal" class="fixed inset-0 bg-black/90 hidden z-50 flex items-end justify-center sm:items-center"><div class="bg-white w-full max-w-md rounded-t-2xl sm:rounded-xl p-4 h-auto flex flex-col"><div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-theme">Betting</h2><button onclick="closeBetModal()" class="text-gray-500 text-2xl">&times;</button></div><div class="flex gap-2 mb-4 text-sm font-bold"><button onclick="setTab('direct')" id="btnDirect" class="flex-1 py-2 rounded tab-active">Direct</button><button onclick="setTab('quick')" id="btnQuick" class="flex-1 py-2 rounded tab-inactive">Quick</button></div><form id="betForm" onsubmit="placeBet(event)" class="flex-1 flex flex-col"><div id="tabDirectContent"><label class="text-xs text-gray-500 font-bold">Numbers (comma separated)</label><textarea id="numberInput" name="number" class="w-full h-20 border-2 border-gray-300 rounded-lg p-2 text-lg font-bold text-gray-700 focus:border-[#4a3b32] focus:outline-none" placeholder="Ex: 12, 34, 56"></textarea></div><div id="tabQuickContent" class="hidden space-y-2"><div class="grid grid-cols-2 gap-2"><button type="button" onclick="quickBet('head')" class="bg-gray-200 p-2 rounded font-bold text-gray-700 hover:bg-gray-300">Head (ထိပ်)</button><button type="button" onclick="quickBet('tail')" class="bg-gray-200 p-2 rounded font-bold text-gray-700 hover:bg-gray-300">Tail (နောက်)</button><button type="button" onclick="quickBet('double')" class="bg-gray-200 p-2 rounded font-bold text-gray-700 hover:bg-gray-300">Double (အပူး)</button><button type="button" onclick="quickBet('brake')" class="bg-gray-200 p-2 rounded font-bold text-gray-700 hover:bg-gray-300">Brake (R)</button></div><div id="quickInputArea" class="hidden mt-2 p-2 bg-yellow-50 rounded border border-yellow-200"><label id="quickLabel" class="text-xs font-bold text-gray-600 block mb-1">Enter Number:</label><div class="flex gap-2"><input type="number" id="quickVal" class="flex-1 border rounded p-2 text-center font-bold"><button type="button" onclick="generateNumbers()" class="bg-theme text-white px-4 rounded font-bold">Add</button></div></div></div><div class="mt-4"><label class="text-xs text-gray-500 font-bold">Amount (Per Number)</label><input type="number" name="amount" class="w-full border-2 border-gray-300 rounded-lg p-2 text-xl font-bold text-center mb-4" required><button class="w-full bg-theme text-white py-3 rounded-lg font-bold text-lg">Confirm Bet</button></div></form></div></div>
+      <div id="voucherModal" class="fixed inset-0 bg-black/90 hidden z-[100] flex items-center justify-center p-4"><div class="bg-white w-full max-w-sm rounded-lg overflow-hidden shadow-2xl relative"><button onclick="document.getElementById('voucherModal').classList.add('hidden'); window.location.reload();" class="absolute top-2 right-3 text-gray-400 text-2xl">&times;</button><div id="voucherContent" class="p-4"></div><div class="bg-gray-100 p-3 text-center"><button onclick="document.getElementById('voucherModal').classList.add('hidden'); window.location.reload();" class="bg-theme text-white w-full py-2 rounded font-bold">Close</button></div></div></div>
 
       <script>
         const p = new URLSearchParams(window.location.search);
         if(p.get('status')==='market_closed') Swal.fire({icon:'warning',title:'Market Closed',text:'Betting is currently closed.',confirmButtonColor:'#d97736'});
-
-        function filterHistory() {
-            const input = document.getElementById('historySearch');
-            const filter = input.value.trim();
-            const list = document.getElementById('historyList');
-            const items = list.getElementsByClassName('history-item');
-            for (let i = 0; i < items.length; i++) {
-                const numberSpan = items[i].querySelector('.bet-number');
-                const txtValue = numberSpan.textContent || numberSpan.innerText;
-                if (txtValue.indexOf(filter) > -1) items[i].style.display = "";
-                else items[i].style.display = "none";
-            }
-        }
-
-        function confirmClearHistory() {
-            Swal.fire({
-                title: 'Clear History?',
-                text: "Only finished bets will be removed. Pending bets will stay.",
-                icon: 'warning',
-                showCancelButton: true,
-                confirmButtonColor: '#d33',
-                cancelButtonColor: '#3085d6',
-                confirmButtonText: 'Yes, clear it!'
-            }).then((result) => {
-                if (result.isConfirmed) {
-                    showLoader();
-                    fetch('/clear_history', { method: 'POST' })
-                    .then(res => res.json())
-                    .then(data => {
-                        hideLoader();
-                        Swal.fire('Cleared!', data.count + ' records removed.', 'success').then(() => window.location.reload());
-                    });
-                }
-            })
-        }
-
+        function filterHistory() { const i = document.getElementById('historySearch'); const f = i.value.trim(); const l = document.getElementById('historyList'); const it = l.getElementsByClassName('history-item'); for(let x=0;x<it.length;x++){ const s = it[x].querySelector('.bet-number'); const t = s.textContent||s.innerText; if(t.indexOf(f)>-1) it[x].style.display=""; else it[x].style.display="none"; } }
+        function confirmClearHistory() { Swal.fire({title:'Clear History?',text:"Only finished bets removed.",icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'Yes'}).then((r)=>{if(r.isConfirmed){showLoader();fetch('/clear_history',{method:'POST'}).then(res=>res.json()).then(d=>{hideLoader();Swal.fire('Cleared!',d.count+' records removed.','success').then(()=>window.location.reload());});}}) }
         let currentQuickMode = '';
         function openBetModal() { document.getElementById('betModal').classList.remove('hidden'); }
         function closeBetModal() { document.getElementById('betModal').classList.add('hidden'); }
-        function setTab(tab) {
-           const d = document.getElementById('tabDirectContent'); const q = document.getElementById('tabQuickContent');
-           const bd = document.getElementById('btnDirect'); const bq = document.getElementById('btnQuick');
-           if(tab==='direct'){ d.classList.remove('hidden'); q.classList.add('hidden'); bd.className="flex-1 py-2 rounded tab-active"; bq.className="flex-1 py-2 rounded tab-inactive"; }
-           else{ d.classList.add('hidden'); q.classList.remove('hidden'); bd.className="flex-1 py-2 rounded tab-inactive"; bq.className="flex-1 py-2 rounded tab-active"; }
-        }
-        function quickBet(mode) {
-           const a = document.getElementById('quickInputArea'); const l = document.getElementById('quickLabel'); const i = document.getElementById('quickVal');
-           if (mode === 'double') { addNumbers(generateDouble()); a.classList.add('hidden'); Swal.fire('Added', 'Double numbers added!', 'success'); } 
-           else { currentQuickMode = mode; a.classList.remove('hidden'); i.value = ''; i.focus(); l.innerText = mode === 'brake' ? 'Enter Number (e.g. 12):' : 'Enter Digit (e.g. 5):'; }
-        }
-        function generateNumbers() {
-           const v = document.getElementById('quickVal').value; if(!v) return;
-           let n = [];
-           if(currentQuickMode==='head') n=generateHead(v);
-           if(currentQuickMode==='tail') n=generateTail(v);
-           if(currentQuickMode==='brake') n=generateBrake(v);
-           addNumbers(n); document.getElementById('quickVal').value=''; Swal.fire('Added', n.length+' numbers added!', 'success');
-        }
+        function setTab(tab) { const d = document.getElementById('tabDirectContent'); const q = document.getElementById('tabQuickContent'); const bd = document.getElementById('btnDirect'); const bq = document.getElementById('btnQuick'); if(tab==='direct'){ d.classList.remove('hidden'); q.classList.add('hidden'); bd.className="flex-1 py-2 rounded tab-active"; bq.className="flex-1 py-2 rounded tab-inactive"; } else{ d.classList.add('hidden'); q.classList.remove('hidden'); bd.className="flex-1 py-2 rounded tab-inactive"; bq.className="flex-1 py-2 rounded tab-active"; } }
+        function quickBet(mode) { const a = document.getElementById('quickInputArea'); const l = document.getElementById('quickLabel'); const i = document.getElementById('quickVal'); if (mode === 'double') { addNumbers(generateDouble()); a.classList.add('hidden'); Swal.fire('Added', 'Double numbers added!', 'success'); } else { currentQuickMode = mode; a.classList.remove('hidden'); i.value = ''; i.focus(); l.innerText = mode === 'brake' ? 'Enter Number (e.g. 12):' : 'Enter Digit (e.g. 5):'; } }
+        function generateNumbers() { const v = document.getElementById('quickVal').value; if(!v) return; let n = []; if(currentQuickMode==='head') n=generateHead(v); if(currentQuickMode==='tail') n=generateTail(v); if(currentQuickMode==='brake') n=generateBrake(v); addNumbers(n); document.getElementById('quickVal').value=''; Swal.fire('Added', n.length+' numbers added!', 'success'); }
         function addNumbers(n) { const i = document.getElementById('numberInput'); let c = i.value.trim(); if(c && !c.endsWith(',')) c += ','; i.value = c + n.join(','); }
         function generateHead(d) { let r=[]; for(let i=0;i<10;i++) r.push(d+i); return r; }
         function generateTail(d) { let r=[]; for(let i=0;i<10;i++) r.push(i+d); return r; }
         function generateDouble() { let r=[]; for(let i=0;i<10;i++) r.push(i+\"\"+i); return r; }
         function generateBrake(n) { if(n.length!==2)return[]; const r=n[1]+n[0]; return n===r?[n]:[n,r]; }
-
-        async function placeBet(e) {
-            e.preventDefault(); showLoader(); const formData = new FormData(e.target);
-            try {
-                const res = await fetch('/bet', { method: 'POST', body: formData }); const data = await res.json(); hideLoader();
-                if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } 
-                else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error');
-                else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error');
-                else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning');
-                else Swal.fire('Error', 'Invalid Bet', 'error');
-            } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); }
-        }
-
-        function showVoucher(v) {
-            const html = \`<div class="voucher-container"><div class="stamp">PAID</div><div class="voucher-header"><h2 class="text-xl font-bold">Myanmar 2D Voucher</h2><div class="text-xs text-gray-500">ID: \${v.id}</div><div class="text-sm mt-1">User: <b>\${v.user}</b></div><div class="text-xs text-gray-400">\${v.date} \${v.time}</div></div><div class="voucher-body">\${v.numbers.map(n => \`<div class="voucher-row"><span>\${n}</span><span>\${v.amountPerNum}</span></div>\`).join('')}</div><div class="voucher-total"><span>TOTAL</span><span>\${v.total} Ks</span></div></div>\`;
-            document.getElementById('voucherContent').innerHTML = html; document.getElementById('voucherModal').classList.remove('hidden');
-        }
-
+        async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
+        function showVoucher(v) { const html = \`<div class="voucher-container"><div class="stamp">PAID</div><div class="voucher-header"><h2 class="text-xl font-bold">Myanmar 2D Voucher</h2><div class="text-xs text-gray-500">ID: \${v.id}</div><div class="text-sm mt-1">User: <b>\${v.user}</b></div><div class="text-xs text-gray-400">\${v.date} \${v.time}</div></div><div class="voucher-body">\${v.numbers.map(n => \`<div class="voucher-row"><span>\${n}</span><span>\${v.amountPerNum}</span></div>\`).join('')}</div><div class="voucher-total"><span>TOTAL</span><span>\${v.total} Ks</span></div></div>\`; document.getElementById('voucherContent').innerHTML = html; document.getElementById('voucherModal').classList.remove('hidden'); }
         const API_URL = "https://api.thaistock2d.com/live";
-        async function updateData() {
-          try {
-            const res = await fetch(API_URL); const data = await res.json();
-            if(data.live) { document.getElementById('live_twod').innerText = data.live.twod || "--"; document.getElementById('live_date').innerText = data.live.date || "Today"; document.getElementById('live_time').innerText = data.live.time || "--:--:--"; }
-            if (data.result) {
-                if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; }
-                const ev = data.result[3] || data.result[2];
-                if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; }
-            }
-          } catch (e) {}
-        }
-        setInterval(updateData, 2000); updateData();
+        async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); if(data.live) { document.getElementById('live_twod').innerText = data.live.twod || "--"; document.getElementById('live_date').innerText = data.live.date || "Today"; document.getElementById('live_time').innerText = data.live.time || "--:--:--"; } if (data.result) { if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } const ev = data.result[3] || data.result[2]; if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } } } catch (e) {} } setInterval(updateData, 2000); updateData();
       </script>
     </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
 });
