@@ -1,122 +1,108 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
 
 const kv = await Deno.openKv();
 
-// --- SECURITY HELPERS ---
-async function hashPassword(password: string, salt: string) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password + salt);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-function generateId() { return crypto.randomUUID(); }
-async function isRateLimited(req: Request, limitType: string, maxRequests: number) {
-  const ip = req.headers.get("x-forwarded-for") || "unknown";
-  const key = ["ratelimit", limitType, ip];
-  const entry = await kv.get(key);
-  const current = (entry.value as number) || 0;
-  if (current >= maxRequests) return true;
-  await kv.set(key, current + 1, { expireIn: 60000 }); 
-  return false;
-}
+// --- CRON JOB: AUTO SAVE 2D RESULTS ---
+// Runs every 10 minutes to snatch results from API
+Deno.cron("Save 2D History", "*/10 * * * *", async () => {
+  try {
+    const res = await fetch("https://api.thaistock2d.com/live");
+    const data = await res.json();
+    
+    // Get Myanmar Date String (YYYY-MM-DD)
+    const now = new Date();
+    const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
+    const dateKey = mmDate.getFullYear() + "-" + 
+                    String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + 
+                    String(mmDate.getDate()).padStart(2, '0');
+
+    // Check if weekend (Sat=6, Sun=0) - usually no 2D, but we check API data anyway
+    
+    let morning = "--";
+    let evening = "--";
+
+    if (data.result) {
+        // Usually Index 1 is Morning, Index 3 (or 2) is Evening
+        if (data.result[1] && data.result[1].twod) morning = data.result[1].twod;
+        
+        const ev = data.result[3] || data.result[2];
+        if (ev && ev.twod) evening = ev.twod;
+    }
+
+    // Only save if we have at least one result
+    if (morning !== "--" || evening !== "--") {
+        // Get existing to avoid overwriting with "--" if API resets early
+        const existing = await kv.get(["history", dateKey]);
+        const oldVal = existing.value as any || { morning: "--", evening: "--" };
+        
+        const newVal = {
+            morning: morning !== "--" ? morning : oldVal.morning,
+            evening: evening !== "--" ? evening : oldVal.evening,
+            date: dateKey
+        };
+        
+        await kv.set(["history", dateKey], newVal);
+    }
+  } catch (e) {
+    console.error("Auto-save failed:", e);
+  }
+});
 
 serve(async (req) => {
   const url = new URL(req.url);
   
-  // *** EMERGENCY FIX: RESET ADMIN ACCOUNT ***
-  // ဒီ Link ကိုဝင်လိုက်တာနဲ့ Admin အဟောင်းပျက်ပြီး အသစ်ဖွင့်လို့ရသွားမယ်
-  if (url.pathname === "/reset_admin") {
-      await kv.delete(["users", "admin"]);
-      return new Response("Admin Account Deleted. You can now Go to Register and create 'admin' again.", { status: 200 });
-  }
-
   // =========================
   // 1. AUTH
   // =========================
-  const cookies = req.headers.get("Cookie") || "";
-  const sessionMatch = cookies.match(/session_id=([^;]+)/);
-  const sessionId = sessionMatch ? sessionMatch[1] : null;
-  
-  let currentUser = null;
-  if (sessionId) {
-      const sessionEntry = await kv.get(["sessions", sessionId]);
-      if (sessionEntry.value) {
-          currentUser = sessionEntry.value as string;
-          await kv.set(["sessions", sessionId], currentUser, { expireIn: 1296000 }); 
-      }
-  }
-  const isAdmin = currentUser === "admin";
-
-  if (url.pathname === "/logout") {
-    if (sessionId) await kv.delete(["sessions", sessionId]);
-    const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `session_id=; Path=/; Max-Age=0`);
-    return new Response(null, { status: 303, headers });
-  }
+  const cookieOptions = "; Path=/; HttpOnly; Max-Age=1296000"; 
 
   if (req.method === "POST" && url.pathname === "/register") {
-    if (await isRateLimited(req, "register", 5)) return new Response("Too many attempts", { status: 429 });
-
     const form = await req.formData();
-    const username = form.get("username")?.toString().toLowerCase().trim();
+    const username = form.get("username")?.toString();
     const password = form.get("password")?.toString();
-    const remember = form.get("remember") === "on";
 
     if (!username || !password) return Response.redirect(url.origin + "/?error=missing_fields");
-    if (username.length < 3 || password.length < 6) return Response.redirect(url.origin + "/?error=weak_password");
 
     const userEntry = await kv.get(["users", username]);
     if (userEntry.value) return Response.redirect(url.origin + "/?error=user_exists");
 
-    const salt = generateId();
-    const hashedPassword = await hashPassword(password, salt);
-
-    await kv.set(["users", username], { 
-        passwordHash: hashedPassword, 
-        salt: salt, 
-        balance: 0, 
-        avatar: "" 
-    });
-    
-    const newSessionId = generateId();
-    const maxAge = remember ? 1296000 : 86400; 
-    await kv.set(["sessions", newSessionId], username, { expireIn: maxAge });
+    await kv.set(["users", username], { password, balance: 0 });
     
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax`);
+    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
     return new Response(null, { status: 303, headers });
   }
 
   if (req.method === "POST" && url.pathname === "/login") {
-    if (await isRateLimited(req, "login", 10)) return new Response("Too many attempts", { status: 429 });
-
     const form = await req.formData();
-    const username = form.get("username")?.toString().toLowerCase().trim();
+    const username = form.get("username")?.toString();
     const password = form.get("password")?.toString();
-    const remember = form.get("remember") === "on";
 
     const userEntry = await kv.get(["users", username]);
     const userData = userEntry.value as any;
 
-    if (!userData) return Response.redirect(url.origin + "/?error=invalid_login");
-
-    const inputHash = await hashPassword(password, userData.salt);
-    if (inputHash !== userData.passwordHash) {
+    if (!userData || userData.password !== password) {
        return Response.redirect(url.origin + "/?error=invalid_login");
     }
 
-    const newSessionId = generateId();
-    const maxAge = remember ? 1296000 : 86400;
-    await kv.set(["sessions", newSessionId], username, { expireIn: maxAge });
-
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax`);
+    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
     return new Response(null, { status: 303, headers });
   }
 
+  if (url.pathname === "/logout") {
+    const headers = new Headers({ "Location": "/" });
+    headers.set("Set-Cookie", `user=; Path=/; Max-Age=0`);
+    return new Response(null, { status: 303, headers });
+  }
+
+  const cookies = req.headers.get("Cookie") || "";
+  const userCookie = cookies.split(";").find(c => c.trim().startsWith("user="));
+  const currentUser = userCookie ? userCookie.split("=")[1].trim() : null;
+  const isAdmin = currentUser === "admin";
+
   // =========================
-  // 2. PROFILE & ACTIONS
+  // 2. PROFILE & DATA
   // =========================
   if (req.method === "POST" && url.pathname === "/update_avatar" && currentUser) {
       const form = await req.formData();
@@ -133,19 +119,33 @@ serve(async (req) => {
   if (req.method === "POST" && url.pathname === "/change_password" && currentUser) {
       const form = await req.formData();
       const newPass = form.get("new_password")?.toString();
-      if (newPass && newPass.length >= 6) {
+      if (newPass) {
           const userEntry = await kv.get(["users", currentUser]);
           const userData = userEntry.value as any;
-          
-          const salt = generateId();
-          const hashedPassword = await hashPassword(newPass, salt);
-
-          await kv.set(["users", currentUser], { ...userData, passwordHash: hashedPassword, salt: salt });
+          await kv.set(["users", currentUser], { ...userData, password: newPass });
           return Response.redirect(url.origin + "/profile?status=pass_changed");
       }
       return Response.redirect(url.origin + "/profile?status=error");
   }
 
+  // =========================
+  // 3. ADMIN MANUAL HISTORY
+  // =========================
+  if (isAdmin && req.method === "POST" && url.pathname === "/admin/add_history") {
+      const form = await req.formData();
+      const date = form.get("date")?.toString(); // YYYY-MM-DD
+      const morning = form.get("morning")?.toString() || "--";
+      const evening = form.get("evening")?.toString() || "--";
+      
+      if (date) {
+          await kv.set(["history", date], { morning, evening, date });
+      }
+      return new Response(null, { status: 303, headers: { "Location": "/profile" } }); // Redirect back to profile/admin
+  }
+
+  // =========================
+  // 4. BETTING LOGIC
+  // =========================
   if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
       const iter = kv.list({ prefix: ["bets"] });
       let deletedCount = 0;
@@ -160,8 +160,6 @@ serve(async (req) => {
   }
 
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
-    if (await isRateLimited(req, "bet", 60)) return new Response(JSON.stringify({ status: "slow_down" }), { headers: { "content-type": "application/json" } });
-
     const now = new Date();
     const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
     const timePart = mmString.split(", ")[1];
@@ -234,12 +232,12 @@ serve(async (req) => {
   }
 
   // =========================
-  // 4. ADMIN LOGIC
+  // 5. ADMIN LOGIC
   // =========================
   if (isAdmin && req.method === "POST") {
     if (url.pathname === "/admin/topup") {
       const form = await req.formData();
-      const targetUser = form.get("username")?.toString().toLowerCase().trim();
+      const targetUser = form.get("username")?.toString();
       const amount = parseInt(form.get("amount")?.toString() || "0");
       if(targetUser) {
         const userEntry = await kv.get(["users", targetUser]);
@@ -256,17 +254,12 @@ serve(async (req) => {
     
     if (url.pathname === "/admin/reset_pass") {
         const form = await req.formData();
-        const targetUser = form.get("username")?.toString().toLowerCase().trim();
+        const targetUser = form.get("username")?.toString();
         const newPass = form.get("password")?.toString();
-        
         if (targetUser && newPass) {
             const userEntry = await kv.get(["users", targetUser]);
             const userData = userEntry.value as any;
-            if (userData) {
-                const salt = generateId();
-                const hashedPassword = await hashPassword(newPass, salt);
-                await kv.set(["users", targetUser], { ...userData, passwordHash: hashedPassword, salt: salt });
-            }
+            if (userData) await kv.set(["users", targetUser], { ...userData, password: newPass });
         }
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
@@ -359,7 +352,7 @@ serve(async (req) => {
   }
 
   // =========================
-  // 5. UI RENDERING
+  // 6. UI RENDERING
   // =========================
   const commonHead = `
     <meta charset="UTF-8">
@@ -439,7 +432,6 @@ serve(async (req) => {
           const p = new URLSearchParams(window.location.search);
           if(p.get('error')==='invalid_login') Swal.fire('Error','Invalid Username or Password','error');
           if(p.get('error')==='user_exists') Swal.fire('Error','Username already taken','error');
-          if(p.get('error')==='weak_password') Swal.fire('Error','Password too short (min 6 chars)','error');
           function showLogin(){ document.getElementById('loginForm').classList.remove('hidden'); document.getElementById('regForm').classList.add('hidden'); document.getElementById('tabLogin').classList.add('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabLogin').classList.remove('text-gray-400'); document.getElementById('tabReg').classList.remove('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabReg').classList.add('text-gray-400'); }
           function showRegister(){ document.getElementById('loginForm').classList.add('hidden'); document.getElementById('regForm').classList.remove('hidden'); document.getElementById('tabReg').classList.add('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabReg').classList.remove('text-gray-400'); document.getElementById('tabLogin').classList.remove('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabLogin').classList.add('text-gray-400'); }
         </script>
@@ -478,6 +470,20 @@ serve(async (req) => {
              <p class="text-white/70 text-sm">${balance.toLocaleString()} Ks</p>
           </div>
           <div class="p-4 space-y-4">
+             
+             ${isAdmin ? `
+             <div class="bg-white p-4 rounded-xl shadow-sm border-l-4 border-purple-500">
+                <h3 class="font-bold text-purple-600 mb-3"><i class="fas fa-calendar-plus mr-2"></i>Add Past History</h3>
+                <form action="/admin/add_history" method="POST" onsubmit="showLoader()" class="space-y-2">
+                    <input name="date" type="date" class="w-full border rounded p-2 text-sm" required>
+                    <div class="flex gap-2">
+                        <input name="morning" placeholder="12:01 (e.g 41)" class="w-1/2 border rounded p-2 text-center">
+                        <input name="evening" placeholder="4:30 (e.g 92)" class="w-1/2 border rounded p-2 text-center">
+                    </div>
+                    <button class="bg-purple-600 text-white w-full py-2 rounded font-bold text-xs">SAVE RECORD</button>
+                </form>
+             </div>` : ''}
+
              <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-lock text-yellow-500 mr-2"></i>Change Password</h3><form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2"><input type="password" name="new_password" placeholder="New Password" class="flex-1 border rounded p-2 text-sm" required><button class="bg-[#4a3b32] text-white px-4 py-2 rounded text-sm font-bold">Save</button></form></div>
              <div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin</h3><div class="grid grid-cols-2 gap-2">
                 <div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100 relative overflow-hidden"><img src="${contact.kpay_img || 'https://img.icons8.com/color/48/k-pay.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">KPay</div><div class="text-sm font-bold text-blue-800 select-all">${contact.kpay_no}</div><div class="text-[10px] text-gray-400">${contact.kpay_name}</div></div>
@@ -488,6 +494,41 @@ serve(async (req) => {
           </div>
           <script>const p=new URLSearchParams(window.location.search);if(p.get('status')==='pass_changed')Swal.fire('Success','Password Changed Successfully!','success');if(p.get('status')==='error')Swal.fire('Error','Something went wrong','error'); function uploadAvatar(input) { if(input.files && input.files[0]) { const file = input.files[0]; const reader = new FileReader(); reader.onload = function(e) { const img = new Image(); img.src = e.target.result; img.onload = function() { const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d'); const size = 150; canvas.width = size; canvas.height = size; let sSize = Math.min(img.width, img.height); let sx = (img.width - sSize) / 2; let sy = (img.height - sSize) / 2; ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size); const dataUrl = canvas.toDataURL('image/jpeg', 0.7); const fd = new FormData(); fd.append('avatar', dataUrl); showLoader(); fetch('/update_avatar', { method: 'POST', body: fd }).then(res => res.json()).then(d => { hideLoader(); if(d.status==='success') location.reload(); else Swal.fire('Error', 'Upload failed', 'error'); }); } }; reader.readAsDataURL(file); } } </script>
         </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
+  // HISTORY PAGE
+  if (url.pathname === "/history") {
+      const historyList = [];
+      const hIter = kv.list({ prefix: ["history"] }, { reverse: true });
+      for await (const entry of hIter) {
+          historyList.push(entry.value);
+      }
+
+      return new Response(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head><title>History</title>${commonHead}</head>
+        <body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">
+          ${loaderHTML}
+          <div class="bg-[#4a3b32] text-white p-4 shadow-lg flex items-center gap-4 sticky top-0 z-50">
+             <a href="/" onclick="showLoader()" class="text-2xl"><i class="fas fa-arrow-left"></i></a>
+             <h1 class="text-xl font-bold">2D History</h1>
+          </div>
+          <div class="p-4 space-y-2">
+             <div class="grid grid-cols-3 bg-gray-200 p-2 rounded font-bold text-center text-xs text-gray-600">
+                <div>Date</div><div>12:01 PM</div><div>04:30 PM</div>
+             </div>
+             ${historyList.length === 0 ? '<div class="text-center p-4 text-gray-400">No history yet</div>' : ''}
+             ${historyList.map((h: any) => `
+                <div class="grid grid-cols-3 bg-white p-3 rounded shadow-sm text-center items-center border-b">
+                    <div class="text-xs font-bold text-gray-500">${h.date}</div>
+                    <div class="text-lg font-bold text-blue-600">${h.morning}</div>
+                    <div class="text-lg font-bold text-purple-600">${h.evening}</div>
+                </div>
+             `).join('')}
+          </div>
+        </body></html>
+      `, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
   const bets = [];
@@ -547,6 +588,9 @@ serve(async (req) => {
         <div class="card-gradient rounded-2xl p-6 text-center text-white shadow-lg relative overflow-hidden">
           <div class="flex justify-between items-center mb-2 text-gray-300 text-sm"><span id="live_date">Today</span><span class="flex items-center gap-1"><i class="fas fa-circle text-green-500 text-[10px]"></i> Live</span></div>
           <div class="py-2"><div id="live_twod" class="text-8xl font-bold tracking-tighter drop-shadow-md">--</div><div class="text-sm mt-2 opacity-80">Update: <span id="live_time">--:--:--</span></div></div>
+          <div class="mt-4 border-t border-white/20 pt-2">
+             <a href="/history" onclick="showLoader()" class="text-xs text-yellow-300 font-bold flex items-center justify-center gap-1 hover:text-white"><i class="fas fa-calendar-alt"></i> View 2D History</a>
+          </div>
         </div>
       </div>
 
@@ -603,7 +647,6 @@ serve(async (req) => {
         if(p.get('status')==='market_closed') Swal.fire({icon:'warning',title:'Market Closed',text:'Betting is currently closed.',confirmButtonColor:'#d97736'});
         if(p.get('status')==='error_min') Swal.fire({icon:'error',title:'Invalid Amount',text:'Minimum bet is 50 Ks',confirmButtonColor:'#d33'});
         if(p.get('status')==='error_max') Swal.fire({icon:'error',title:'Invalid Amount',text:'Maximum bet is 100,000 Ks',confirmButtonColor:'#d33'});
-        if(p.get('status')==='slow_down') Swal.fire({icon:'warning',title:'Whoa!',text:'Please slow down (1 request/sec).',confirmButtonColor:'#d97736'});
 
         function filterHistory() { const i = document.getElementById('historySearch'); const f = i.value.trim(); const l = document.getElementById('historyList'); const it = l.getElementsByClassName('history-item'); for(let x=0;x<it.length;x++){ const s = it[x].querySelector('.bet-number'); const t = s.textContent||s.innerText; if(t.indexOf(f)>-1) it[x].style.display=""; else it[x].style.display="none"; } }
         function confirmClearHistory() { Swal.fire({title:'Clear History?',text:"Only finished bets removed.",icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'Yes'}).then((r)=>{if(r.isConfirmed){showLoader();fetch('/clear_history',{method:'POST'}).then(res=>res.json()).then(d=>{hideLoader();Swal.fire('Cleared!',d.count+' records removed.','success').then(()=>window.location.reload());});}}) }
