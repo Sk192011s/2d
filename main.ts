@@ -1,59 +1,131 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
 
 const kv = await Deno.openKv();
+
+// --- SECURITY HELPER FUNCTIONS ---
+
+// 1. Password Hashing (SHA-256 with Salt)
+async function hashPassword(password: string, salt: string) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password + salt);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// 2. Generate Random ID
+function generateId() {
+  return crypto.randomUUID();
+}
+
+// 3. Rate Limiter (Prevent Spam/Bots)
+async function isRateLimited(req: Request, limitType: string, maxRequests: number) {
+  const ip = req.headers.get("x-forwarded-for") || "unknown";
+  const key = ["ratelimit", limitType, ip];
+  const entry = await kv.get(key);
+  const current = (entry.value as number) || 0;
+  
+  if (current >= maxRequests) return true;
+  
+  await kv.set(key, current + 1, { expireIn: 60000 }); // Reset every 1 min
+  return false;
+}
 
 serve(async (req) => {
   const url = new URL(req.url);
   
   // =========================
-  // 1. AUTH
+  // 1. AUTH (SECURE SESSION)
   // =========================
-  const cookieOptions = "; Path=/; HttpOnly; Max-Age=1296000"; 
+  
+  // Check Session from Cookie
+  const cookies = req.headers.get("Cookie") || "";
+  const sessionMatch = cookies.match(/session_id=([^;]+)/);
+  const sessionId = sessionMatch ? sessionMatch[1] : null;
+  
+  let currentUser = null;
+  if (sessionId) {
+      const sessionEntry = await kv.get(["sessions", sessionId]);
+      if (sessionEntry.value) {
+          currentUser = sessionEntry.value as string;
+          // Refresh Session (Slide Expiration)
+          await kv.set(["sessions", sessionId], currentUser, { expireIn: 1296000 }); // 15 Days
+      }
+  }
+  const isAdmin = currentUser === "admin";
 
+  // LOGOUT
+  if (url.pathname === "/logout") {
+    if (sessionId) await kv.delete(["sessions", sessionId]);
+    const headers = new Headers({ "Location": "/" });
+    headers.set("Set-Cookie", `session_id=; Path=/; Max-Age=0`);
+    return new Response(null, { status: 303, headers });
+  }
+
+  // REGISTER (HASHED PASSWORD)
   if (req.method === "POST" && url.pathname === "/register") {
+    // Anti-Bot: Limit Registration (5 per min per IP)
+    if (await isRateLimited(req, "register", 5)) return new Response("Too many attempts", { status: 429 });
+
     const form = await req.formData();
-    const username = form.get("username")?.toString();
+    const username = form.get("username")?.toString().toLowerCase().trim(); // Normalize
     const password = form.get("password")?.toString();
 
     if (!username || !password) return Response.redirect(url.origin + "/?error=missing_fields");
+    if (username.length < 3 || password.length < 6) return Response.redirect(url.origin + "/?error=weak_password");
 
     const userEntry = await kv.get(["users", username]);
     if (userEntry.value) return Response.redirect(url.origin + "/?error=user_exists");
 
-    await kv.set(["users", username], { password, balance: 0 });
+    // Security: Hash Password
+    const salt = generateId();
+    const hashedPassword = await hashPassword(password, salt);
+
+    await kv.set(["users", username], { 
+        passwordHash: hashedPassword, 
+        salt: salt, 
+        balance: 0, 
+        avatar: "" 
+    });
+    
+    // Create Session
+    const newSessionId = generateId();
+    await kv.set(["sessions", newSessionId], username, { expireIn: 1296000 });
     
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
+    headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=1296000; SameSite=Lax`);
     return new Response(null, { status: 303, headers });
   }
 
+  // LOGIN (VERIFY HASH)
   if (req.method === "POST" && url.pathname === "/login") {
+    // Anti-Bot: Limit Login (10 per min per IP)
+    if (await isRateLimited(req, "login", 10)) return new Response("Too many login attempts. Wait a minute.", { status: 429 });
+
     const form = await req.formData();
-    const username = form.get("username")?.toString();
+    const username = form.get("username")?.toString().toLowerCase().trim();
     const password = form.get("password")?.toString();
 
     const userEntry = await kv.get(["users", username]);
     const userData = userEntry.value as any;
 
-    if (!userData || userData.password !== password) {
+    if (!userData) return Response.redirect(url.origin + "/?error=invalid_login");
+
+    // Verify Hash
+    const inputHash = await hashPassword(password, userData.salt);
+    
+    if (inputHash !== userData.passwordHash) {
        return Response.redirect(url.origin + "/?error=invalid_login");
     }
 
+    // Success
+    const newSessionId = generateId();
+    await kv.set(["sessions", newSessionId], username, { expireIn: 1296000 });
+
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `user=${username}${cookieOptions}`);
+    headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=1296000; SameSite=Lax`);
     return new Response(null, { status: 303, headers });
   }
-
-  if (url.pathname === "/logout") {
-    const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `user=; Path=/; Max-Age=0`);
-    return new Response(null, { status: 303, headers });
-  }
-
-  const cookies = req.headers.get("Cookie") || "";
-  const userCookie = cookies.split(";").find(c => c.trim().startsWith("user="));
-  const currentUser = userCookie ? userCookie.split("=")[1].trim() : null;
-  const isAdmin = currentUser === "admin";
 
   // =========================
   // 2. PROFILE & ACTIONS
@@ -74,15 +146,22 @@ serve(async (req) => {
   if (req.method === "POST" && url.pathname === "/change_password" && currentUser) {
       const form = await req.formData();
       const newPass = form.get("new_password")?.toString();
-      if (newPass) {
+      if (newPass && newPass.length >= 6) {
           const userEntry = await kv.get(["users", currentUser]);
           const userData = userEntry.value as any;
-          await kv.set(["users", currentUser], { ...userData, password: newPass });
+          
+          const salt = generateId();
+          const hashedPassword = await hashPassword(newPass, salt);
+
+          await kv.set(["users", currentUser], { ...userData, passwordHash: hashedPassword, salt: salt });
           return Response.redirect(url.origin + "/profile?status=pass_changed");
       }
       return Response.redirect(url.origin + "/profile?status=error");
   }
 
+  // =========================
+  // 3. BETTING LOGIC
+  // =========================
   if (req.method === "POST" && url.pathname === "/clear_history" && currentUser) {
       const iter = kv.list({ prefix: ["bets"] });
       let deletedCount = 0;
@@ -97,6 +176,9 @@ serve(async (req) => {
   }
 
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
+    // Anti-Spam: Limit Betting (1 request per second)
+    if (await isRateLimited(req, "bet", 60)) return new Response(JSON.stringify({ status: "slow_down" }), { headers: { "content-type": "application/json" } });
+
     const now = new Date();
     const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
     const timePart = mmString.split(", ")[1];
@@ -169,12 +251,12 @@ serve(async (req) => {
   }
 
   // =========================
-  // 3. ADMIN LOGIC
+  // 4. ADMIN LOGIC
   // =========================
   if (isAdmin && req.method === "POST") {
     if (url.pathname === "/admin/topup") {
       const form = await req.formData();
-      const targetUser = form.get("username")?.toString();
+      const targetUser = form.get("username")?.toString().toLowerCase().trim();
       const amount = parseInt(form.get("amount")?.toString() || "0");
       if(targetUser) {
         const userEntry = await kv.get(["users", targetUser]);
@@ -191,12 +273,16 @@ serve(async (req) => {
     
     if (url.pathname === "/admin/reset_pass") {
         const form = await req.formData();
-        const targetUser = form.get("username")?.toString();
+        const targetUser = form.get("username")?.toString().toLowerCase().trim();
         const newPass = form.get("password")?.toString();
         if (targetUser && newPass) {
             const userEntry = await kv.get(["users", targetUser]);
             const userData = userEntry.value as any;
-            if (userData) await kv.set(["users", targetUser], { ...userData, password: newPass });
+            if (userData) {
+                const salt = generateId();
+                const hashedPassword = await hashPassword(newPass, salt);
+                await kv.set(["users", targetUser], { ...userData, passwordHash: hashedPassword, salt: salt });
+            }
         }
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
@@ -289,7 +375,7 @@ serve(async (req) => {
   }
 
   // =========================
-  // 4. UI RENDERING
+  // 5. UI RENDERING
   // =========================
   const commonHead = `
     <meta charset="UTF-8">
@@ -355,13 +441,11 @@ serve(async (req) => {
           <form id="loginForm" action="/login" method="POST" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
-            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer"><input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)</label>
             <button class="bg-[#4a3b32] text-white font-bold w-full py-3 rounded-lg hover:bg-[#3d3029]">Login</button>
           </form>
           <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="New Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="New Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
-            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer"><input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)</label>
             <button class="bg-[#d97736] text-white font-bold w-full py-3 rounded-lg hover:bg-[#b5602b]">Create Account</button>
           </form>
         </div>
@@ -369,6 +453,7 @@ serve(async (req) => {
           const p = new URLSearchParams(window.location.search);
           if(p.get('error')==='invalid_login') Swal.fire('Error','Invalid Username or Password','error');
           if(p.get('error')==='user_exists') Swal.fire('Error','Username already taken','error');
+          if(p.get('error')==='weak_password') Swal.fire('Error','Password too short (min 6 chars)','error');
           function showLogin(){ document.getElementById('loginForm').classList.remove('hidden'); document.getElementById('regForm').classList.add('hidden'); document.getElementById('tabLogin').classList.add('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabLogin').classList.remove('text-gray-400'); document.getElementById('tabReg').classList.remove('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabReg').classList.add('text-gray-400'); }
           function showRegister(){ document.getElementById('loginForm').classList.add('hidden'); document.getElementById('regForm').classList.remove('hidden'); document.getElementById('tabReg').classList.add('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabReg').classList.remove('text-gray-400'); document.getElementById('tabLogin').classList.remove('border-b-2','border-[#4a3b32]','text-[#4a3b32]'); document.getElementById('tabLogin').classList.add('text-gray-400'); }
         </script>
@@ -439,7 +524,6 @@ serve(async (req) => {
   const rateEntry = await kv.get(["system", "rate"]);
   const currentRate = rateEntry.value || 80;
 
-  // STATS CALCULATION (TODAY ONLY)
   let todaySale = 0;
   let todayPayout = 0;
   if (isAdmin) {
@@ -486,52 +570,28 @@ serve(async (req) => {
 
       ${isAdmin ? `
         <div class="px-4 mb-4 space-y-4">
-           <div class="grid grid-cols-3 gap-2">
-                <div class="bg-green-100 border border-green-300 p-2 rounded text-center">
-                    <div class="text-[10px] font-bold text-green-600">TODAY SALE</div>
-                    <div class="font-bold text-sm text-green-800">${todaySale.toLocaleString()}</div>
-                </div>
-                <div class="bg-red-100 border border-red-300 p-2 rounded text-center">
-                    <div class="text-[10px] font-bold text-red-600">PAYOUT</div>
-                    <div class="font-bold text-sm text-red-800">${todayPayout.toLocaleString()}</div>
-                </div>
-                <div class="bg-blue-100 border border-blue-300 p-2 rounded text-center">
-                    <div class="text-[10px] font-bold text-blue-600">PROFIT</div>
-                    <div class="font-bold text-sm text-blue-800">${todayProfit.toLocaleString()}</div>
-                </div>
-           </div>
-
+           <div class="grid grid-cols-3 gap-2"><div class="bg-green-100 border border-green-300 p-2 rounded text-center"><div class="text-[10px] font-bold text-green-600">TODAY SALE</div><div class="font-bold text-sm text-green-800">${todaySale.toLocaleString()}</div></div><div class="bg-red-100 border border-red-300 p-2 rounded text-center"><div class="text-[10px] font-bold text-red-600">PAYOUT</div><div class="font-bold text-sm text-red-800">${todayPayout.toLocaleString()}</div></div><div class="bg-blue-100 border border-blue-300 p-2 rounded text-center"><div class="text-[10px] font-bold text-blue-600">PROFIT</div><div class="font-bold text-sm text-blue-800">${todayProfit.toLocaleString()}</div></div></div>
            <div class="bg-white p-4 rounded shadow border-l-4 border-red-500">
              <h3 class="font-bold text-red-600 mb-2">Payout & Rates</h3>
              <form action="/admin/rate" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2"><label class="text-xs font-bold mt-2">Ratio:</label><input name="rate" value="${currentRate}" class="w-16 border rounded p-1 text-center font-bold"><button class="bg-gray-700 text-white px-2 rounded text-xs">SET</button></form>
              <form action="/admin/payout" method="POST" onsubmit="showLoader()" class="flex flex-col gap-2 border-t pt-2"><div class="flex gap-2"><select name="session" class="w-1/3 border rounded p-1 bg-gray-50 text-xs font-bold"><option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option></select><input name="win_number" placeholder="Win No" class="w-1/3 border rounded p-1 text-center font-bold"><button class="bg-red-600 text-white w-1/3 rounded text-xs font-bold">PAYOUT</button></div></form>
            </div>
-           
            <div class="bg-white p-4 rounded shadow border-l-4 border-green-500">
              <h3 class="font-bold text-green-600 mb-2">Topup</h3>
              <form action="/admin/topup" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2"><input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm"><input name="amount" placeholder="Amt" type="number" class="w-1/3 border rounded p-1 text-sm"><button class="bg-green-600 text-white w-1/3 rounded text-xs font-bold">Topup</button></form>
            </div>
-
            <div class="bg-white p-4 rounded shadow border-l-4 border-blue-500">
              <h3 class="font-bold text-blue-600 mb-2">Payment & Contact Info</h3>
-             <form action="/admin/contact" method="POST" onsubmit="showLoader()" class="grid grid-cols-2 gap-2">
-                <input name="kpay_no" value="${contact.kpay_no}" placeholder="KPay No" class="border rounded p-1 text-sm"><input name="kpay_name" value="${contact.kpay_name}" placeholder="KPay Name" class="border rounded p-1 text-sm"><input name="kpay_img" value="${contact.kpay_img}" placeholder="KPay Img URL" class="col-span-2 border rounded p-1 text-sm">
-                <input name="wave_no" value="${contact.wave_no}" placeholder="Wave No" class="border rounded p-1 text-sm"><input name="wave_name" value="${contact.wave_name}" placeholder="Wave Name" class="border rounded p-1 text-sm"><input name="wave_img" value="${contact.wave_img}" placeholder="Wave Img URL" class="col-span-2 border rounded p-1 text-sm">
-                <input name="tele_link" value="${contact.tele_link}" placeholder="Telegram Link" class="col-span-2 border rounded p-1 text-sm">
-                <button class="col-span-2 bg-blue-600 text-white rounded py-1 text-xs font-bold">UPDATE INFO</button>
-             </form>
+             <form action="/admin/contact" method="POST" onsubmit="showLoader()" class="grid grid-cols-2 gap-2"><input name="kpay_no" value="${contact.kpay_no}" placeholder="KPay No" class="border rounded p-1 text-sm"><input name="kpay_name" value="${contact.kpay_name}" placeholder="KPay Name" class="border rounded p-1 text-sm"><input name="kpay_img" value="${contact.kpay_img}" placeholder="KPay Img URL" class="col-span-2 border rounded p-1 text-sm"><input name="wave_no" value="${contact.wave_no}" placeholder="Wave No" class="border rounded p-1 text-sm"><input name="wave_name" value="${contact.wave_name}" placeholder="Wave Name" class="border rounded p-1 text-sm"><input name="wave_img" value="${contact.wave_img}" placeholder="Wave Img URL" class="col-span-2 border rounded p-1 text-sm"><input name="tele_link" value="${contact.tele_link}" placeholder="Telegram Link" class="col-span-2 border rounded p-1 text-sm"><button class="col-span-2 bg-blue-600 text-white rounded py-1 text-xs font-bold">UPDATE INFO</button></form>
            </div>
-
            <div class="bg-white p-4 rounded shadow border-l-4 border-purple-500">
              <h3 class="font-bold text-purple-600 mb-2">Lucky Tip</h3>
              <form action="/admin/tip" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="tip" placeholder="Tip text" class="flex-1 border rounded p-1 text-sm" value="${dailyTip}"><button class="bg-purple-600 text-white px-3 rounded text-xs font-bold">UPDATE</button></form>
            </div>
-           
            <div class="bg-white p-4 rounded shadow border-l-4 border-yellow-500">
              <h3 class="font-bold text-yellow-600 mb-2">Reset Password</h3>
              <form action="/admin/reset_pass" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm" required><input name="password" placeholder="New Pass" class="w-1/3 border rounded p-1 text-sm" required><button class="bg-yellow-600 text-white w-1/3 rounded text-xs font-bold">RESET</button></form>
            </div>
-           
            <div class="bg-white p-4 rounded shadow border-l-4 border-gray-600">
              <h3 class="font-bold text-gray-600 mb-2">Blocks</h3>
              <form action="/admin/block" method="POST" onsubmit="showLoader()"><input type="hidden" name="action" value="add"><div class="flex gap-2 mb-2"><input name="block_val" type="number" placeholder="Num" class="w-1/2 border rounded p-2 text-center font-bold"><select name="block_type" class="w-1/2 border rounded p-2 text-xs font-bold"><option value="direct">Direct</option><option value="head">Head</option><option value="tail">Tail</option></select></div><div class="flex gap-2"><button class="bg-gray-800 text-white flex-1 py-2 rounded text-xs font-bold">BLOCK</button><button type="submit" formaction="/admin/block" name="action" value="clear" class="bg-red-500 text-white w-1/3 py-2 rounded text-xs font-bold">CLEAR</button></div></form>
@@ -557,6 +617,7 @@ serve(async (req) => {
         if(p.get('status')==='market_closed') Swal.fire({icon:'warning',title:'Market Closed',text:'Betting is currently closed.',confirmButtonColor:'#d97736'});
         if(p.get('status')==='error_min') Swal.fire({icon:'error',title:'Invalid Amount',text:'Minimum bet is 50 Ks',confirmButtonColor:'#d33'});
         if(p.get('status')==='error_max') Swal.fire({icon:'error',title:'Invalid Amount',text:'Maximum bet is 100,000 Ks',confirmButtonColor:'#d33'});
+        if(p.get('status')==='slow_down') Swal.fire({icon:'warning',title:'Whoa!',text:'Please slow down (1 request/sec).',confirmButtonColor:'#d97736'});
 
         function filterHistory() { const i = document.getElementById('historySearch'); const f = i.value.trim(); const l = document.getElementById('historyList'); const it = l.getElementsByClassName('history-item'); for(let x=0;x<it.length;x++){ const s = it[x].querySelector('.bet-number'); const t = s.textContent||s.innerText; if(t.indexOf(f)>-1) it[x].style.display=""; else it[x].style.display="none"; } }
         function confirmClearHistory() { Swal.fire({title:'Clear History?',text:"Only finished bets removed.",icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'Yes'}).then((r)=>{if(r.isConfirmed){showLoader();fetch('/clear_history',{method:'POST'}).then(res=>res.json()).then(d=>{hideLoader();Swal.fire('Cleared!',d.count+' records removed.','success').then(()=>window.location.reload());});}}) }
@@ -571,7 +632,7 @@ serve(async (req) => {
         function generateTail(d) { let r=[]; for(let i=0;i<10;i++) r.push(i+d); return r; }
         function generateDouble() { let r=[]; for(let i=0;i<10;i++) r.push(i+\"\"+i); return r; }
         function generateBrake(n) { if(n.length!==2)return[]; const r=n[1]+n[0]; return n===r?[n]:[n,r]; }
-        async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else if (data.status === 'error_min') Swal.fire('Error', 'Minimum bet is 50 Ks', 'error'); else if (data.status === 'error_max') Swal.fire('Error', 'Maximum bet is 100,000 Ks', 'error'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
+        async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else if (data.status === 'error_min') Swal.fire('Error', 'Minimum bet is 50 Ks', 'error'); else if (data.status === 'error_max') Swal.fire('Error', 'Maximum bet is 100,000 Ks', 'error'); else if (data.status === 'slow_down') Swal.fire('Whoa!', 'Please slow down.', 'warning'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
         function showVoucher(v) { const html = \`<div class="voucher-container"><div class="stamp">PAID</div><div class="voucher-header"><h2 class="text-xl font-bold">Myanmar 2D Voucher</h2><div class="text-xs text-gray-500">ID: \${v.id}</div><div class="text-sm mt-1">User: <b>\${v.user}</b></div><div class="text-xs text-gray-400">\${v.date} \${v.time}</div></div><div class="voucher-body">\${v.numbers.map(n => \`<div class="voucher-row"><span>\${n}</span><span>\${v.amountPerNum}</span></div>\`).join('')}</div><div class="voucher-total"><span>TOTAL</span><span>\${v.total} Ks</span></div></div>\`; document.getElementById('voucherContent').innerHTML = html; document.getElementById('voucherModal').classList.remove('hidden'); }
         const API_URL = "https://api.thaistock2d.com/live";
         async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); if(data.live) { document.getElementById('live_twod').innerText = data.live.twod || "--"; document.getElementById('live_date').innerText = data.live.date || "Today"; document.getElementById('live_time').innerText = data.live.time || "--:--:--"; } if (data.result) { if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } const ev = data.result[3] || data.result[2]; if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } } } catch (e) {} } setInterval(updateData, 2000); updateData();
