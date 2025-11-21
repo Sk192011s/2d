@@ -37,9 +37,9 @@ Deno.cron("Save History", "*/10 * * * *", async () => {
     let evening = "--";
 
     if (data.result) {
-        if (data.result[1] && data.result[1].twod) morning = data.result[1].twod;
+        if (data.result[1]?.twod) morning = data.result[1].twod;
         const ev = data.result[3] || data.result[2];
-        if (ev && ev.twod) evening = ev.twod;
+        if (ev?.twod) evening = ev.twod;
     }
 
     if (morning !== "--" || evening !== "--") {
@@ -357,40 +357,37 @@ serve(async (req) => {
         .nav-item { display: flex; flex-direction: column; align-items: center; color: #64748b; font-size: 10px; transition: color 0.3s; }
         .nav-item.active { color: #3b82f6; }
         .nav-item i { font-size: 20px; margin-bottom: 2px; }
-        #app-loader { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.9); z-index: 9999; display: flex; justify-content: center; align-items: center; transition: opacity 0.3s ease; }
-        .spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .hidden-loader { opacity: 0; pointer-events: none; display: none !important; }
+        
+        /* KEYFRAME ANIMATION FOR FADE OUT */
+        @keyframes fadeOut { to { opacity: 0; visibility: hidden; } }
+        .splash-fade-out { animation: fadeOut 0.5s ease-out 2.5s forwards; pointer-events: none; }
+
+        #splash-screen { position: fixed; inset: 0; background-color: #0f172a; z-index: 10000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        
         .animate-gradient-x { background-size: 200% 200%; animation: gradient-move 3s ease infinite; }
         @keyframes gradient-move { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
         .swal2-popup.swal2-toast { background: #1e293b !important; color: white !important; border: 1px solid rgba(255,255,255,0.1); }
-        
-        /* High Contrast Borders */
-        .glass-card { background: linear-gradient(145deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.9)); border: 2px solid rgba(100, 116, 139, 0.5); box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        .history-item { border-top: 1px solid rgba(255,255,255,0.1); border-bottom: 1px solid rgba(0,0,0,0.3); }
-        
         ::-webkit-scrollbar { width: 0px; }
     </style>
     <script>
         const Toast = Swal.mixin({ toast: true, position: 'top', showConfirmButton: false, timer: 3000, timerProgressBar: true });
-        window.addEventListener('pageshow', () => { document.getElementById('app-loader').classList.add('hidden-loader'); });
-        window.addEventListener('load', () => { 
-             document.getElementById('app-loader').classList.add('hidden-loader');
-             if(!sessionStorage.getItem('splash')){ 
-                 document.getElementById('splash').style.display='flex';
-                 setTimeout(()=>{ document.getElementById('splash').style.opacity='0'; setTimeout(()=>document.getElementById('splash').style.display='none',500); sessionStorage.setItem('splash','1'); }, 2000);
-             } else { document.getElementById('splash').style.display='none'; }
-        });
-        function showLoader(){ document.getElementById('app-loader').classList.remove('hidden-loader'); }
-        function hideLoader(){ document.getElementById('app-loader').classList.add('hidden-loader'); }
     </script>
   `;
-  const loaderHTML = `<div id="app-loader"><div class="spinner"></div></div>`;
-  const splashHTML = `<div id="splash-screen" style="position:fixed;inset:0;background:#0f172a;z-index:10000;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity 0.5s;"><div class="w-24 h-24 bg-blue-600 rounded-2xl flex items-center justify-center mb-4 shadow-2xl shadow-blue-500/50"><i class="fas fa-chart-line text-4xl text-white"></i></div><h1 class="text-2xl font-bold text-white tracking-widest">MYANMAR 2D</h1><p class="text-blue-400 text-xs mt-2 uppercase tracking-widest">Premium Betting</p></div>`;
+  
+  // SPLASH SCREEN HTML WITH AUTO FADE OUT CLASS
+  const splashHTML = `
+    <div id="splash-screen" class="splash-fade-out">
+        <div class="w-24 h-24 bg-blue-600 rounded-2xl flex items-center justify-center mb-4 shadow-2xl shadow-blue-500/50">
+            <i class="fas fa-chart-line text-4xl text-white"></i>
+        </div>
+        <h1 class="text-2xl font-bold text-white tracking-widest">MYANMAR 2D</h1>
+        <p class="text-blue-400 text-xs mt-2 uppercase tracking-widest">Premium Betting</p>
+    </div>
+  `;
 
   // LOGIN PAGE
   if (!currentUser) {
-    return new Response(`<!DOCTYPE html><html><head><title>Welcome</title>${commonHead}</head><body class="h-screen flex items-center justify-center px-4 bg-slate-900">${splashHTML}${loaderHTML}<div class="glass-card w-full max-w-sm p-8 rounded-3xl text-center border-2 border-slate-600"><div class="w-16 h-16 bg-blue-600 rounded-xl mx-auto mb-4 flex items-center justify-center shadow-lg shadow-blue-500/30"><i class="fas fa-chart-line text-2xl text-white"></i></div><h1 class="text-2xl font-bold text-white mb-1">Welcome Back</h1><p class="text-slate-400 text-sm mb-8">Sign in to continue</p><div class="flex justify-center mb-6 bg-slate-800/50 p-1 rounded-xl border border-slate-600"><button onclick="showLogin()" id="tabLogin" class="w-1/2 py-2 rounded-lg font-bold text-sm bg-blue-600 text-white shadow-md">Login</button><button onclick="showRegister()" id="tabReg" class="w-1/2 py-2 rounded-lg font-bold text-sm text-slate-400">Register</button></div><form id="loginForm" action="/login" method="POST" onsubmit="showLoader()"><div class="space-y-4"><input name="username" placeholder="Username" class="w-full bg-slate-800/50 border-2 border-slate-600 text-white p-3 rounded-xl outline-none focus:border-blue-500 transition" required><input type="password" name="password" placeholder="Password" class="w-full bg-slate-800/50 border-2 border-slate-600 text-white p-3 rounded-xl outline-none focus:border-blue-500 transition" required><label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer"><input type="checkbox" name="remember" checked class="rounded bg-slate-700 border-slate-600 text-blue-600"> Remember Me (15 Days)</label><button class="w-full btn-primary py-3.5 rounded-xl font-bold mt-2 shadow-lg shadow-blue-500/30">SIGN IN</button></div></form><form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoader()"><div class="space-y-4"><input name="username" placeholder="Choose Username" class="w-full bg-slate-800/50 border-2 border-slate-600 text-white p-3 rounded-xl outline-none focus:border-blue-500 transition" required><input type="password" name="password" placeholder="Choose Password" class="w-full bg-slate-800/50 border-2 border-slate-600 text-white p-3 rounded-xl outline-none focus:border-blue-500 transition" required><label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer"><input type="checkbox" name="remember" checked class="rounded bg-slate-700 border-slate-600 text-blue-600"> Remember Me (15 Days)</label><button class="w-full btn-primary py-3.5 rounded-xl font-bold mt-2 shadow-lg shadow-blue-500/30">CREATE ACCOUNT</button></div></form></div><script>const p=new URLSearchParams(window.location.search);if(p.get('error'))Toast.fire({icon:'error',title:p.get('error')});function showLogin(){document.getElementById('loginForm').classList.remove('hidden');document.getElementById('regForm').classList.add('hidden');const l=document.getElementById('tabLogin'),r=document.getElementById('tabReg');l.className='w-1/2 py-2 rounded-lg font-bold text-sm bg-blue-600 text-white shadow-md';r.className='w-1/2 py-2 rounded-lg font-bold text-sm text-slate-400';}function showRegister(){document.getElementById('loginForm').classList.add('hidden');document.getElementById('regForm').classList.remove('hidden');const l=document.getElementById('tabLogin'),r=document.getElementById('tabReg');r.className='w-1/2 py-2 rounded-lg font-bold text-sm bg-blue-600 text-white shadow-md';l.className='w-1/2 py-2 rounded-lg font-bold text-sm text-slate-400';}</script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+    return new Response(`<!DOCTYPE html><html><head><title>Welcome</title>${commonHead}</head><body class="h-screen flex items-center justify-center px-4 bg-slate-900">${splashHTML}<div class="glass-card w-full max-w-sm p-8 rounded-3xl text-center border-2 border-slate-600"><div class="w-16 h-16 bg-blue-600 rounded-xl mx-auto mb-4 flex items-center justify-center shadow-lg shadow-blue-500/30"><i class="fas fa-chart-line text-2xl text-white"></i></div><h1 class="text-2xl font-bold text-white mb-1">Welcome Back</h1><p class="text-slate-400 text-sm mb-8">Sign in to continue</p><div class="flex justify-center mb-6 bg-slate-800/50 p-1 rounded-xl border border-slate-600"><button onclick="showLogin()" id="tabLogin" class="w-1/2 py-2 rounded-lg font-bold text-sm bg-blue-600 text-white shadow-md">Login</button><button onclick="showRegister()" id="tabReg" class="w-1/2 py-2 rounded-lg font-bold text-sm text-slate-400">Register</button></div><form id="loginForm" action="/login" method="POST"><div class="space-y-4"><input name="username" placeholder="Username" class="w-full bg-slate-800/50 border-2 border-slate-600 text-white p-3 rounded-xl outline-none focus:border-blue-500 transition" required><input type="password" name="password" placeholder="Password" class="w-full bg-slate-800/50 border-2 border-slate-600 text-white p-3 rounded-xl outline-none focus:border-blue-500 transition" required><label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer"><input type="checkbox" name="remember" checked class="rounded bg-slate-700 border-slate-600 text-blue-600"> Remember Me (15 Days)</label><button class="w-full btn-primary py-3.5 rounded-xl font-bold mt-2 shadow-lg shadow-blue-500/30">SIGN IN</button></div></form><form id="regForm" action="/register" method="POST" class="hidden"><div class="space-y-4"><input name="username" placeholder="Choose Username" class="w-full bg-slate-800/50 border-2 border-slate-600 text-white p-3 rounded-xl outline-none focus:border-blue-500 transition" required><input type="password" name="password" placeholder="Choose Password" class="w-full bg-slate-800/50 border-2 border-slate-600 text-white p-3 rounded-xl outline-none focus:border-blue-500 transition" required><label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer"><input type="checkbox" name="remember" checked class="rounded bg-slate-700 border-slate-600 text-blue-600"> Remember Me (15 Days)</label><button class="w-full btn-primary py-3.5 rounded-xl font-bold mt-2 shadow-lg shadow-blue-500/30">CREATE ACCOUNT</button></div></form></div><script>const p=new URLSearchParams(window.location.search);if(p.get('error'))Toast.fire({icon:'error',title:p.get('error')});function showLogin(){document.getElementById('loginForm').classList.remove('hidden');document.getElementById('regForm').classList.add('hidden');const l=document.getElementById('tabLogin'),r=document.getElementById('tabReg');l.className='w-1/2 py-2 rounded-lg font-bold text-sm bg-blue-600 text-white shadow-md';r.className='w-1/2 py-2 rounded-lg font-bold text-sm text-slate-400';}function showRegister(){document.getElementById('loginForm').classList.add('hidden');document.getElementById('regForm').classList.remove('hidden');const l=document.getElementById('tabLogin'),r=document.getElementById('tabReg');r.className='w-1/2 py-2 rounded-lg font-bold text-sm bg-blue-600 text-white shadow-md';l.className='w-1/2 py-2 rounded-lg font-bold text-sm text-slate-400';}</script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
   const userEntry = await kv.get(["users", currentUser]);
@@ -459,23 +456,23 @@ serve(async (req) => {
             ${isAdmin ? `
             <div class="glass-card p-4 rounded-xl border-2 border-slate-600">
                 <h3 class="text-xs font-bold text-slate-400 mb-3 uppercase tracking-wider">Admin Control</h3>
-                <form action="/admin/topup" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-3"><input name="username" placeholder="User" class="w-1/3 bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white focus:border-blue-500 outline-none"><input name="amount" placeholder="Amount" type="number" class="w-1/3 bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white focus:border-blue-500 outline-none"><button class="bg-green-600 hover:bg-green-700 text-white w-1/3 rounded-lg text-xs font-bold transition shadow-md">TOPUP</button></form>
-                <form action="/admin/payout" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-3"><select name="session" class="w-1/3 bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white outline-none"><option value="MORNING">12:01</option><option value="EVENING">04:30</option></select><input name="win_number" placeholder="Win No" class="w-1/3 bg-slate-800 border border-slate-600 rounded-lg p-2 text-center text-xs text-white focus:border-blue-500 outline-none"><button class="bg-red-600 hover:bg-red-700 text-white w-1/3 rounded-lg text-xs font-bold transition shadow-md">PAYOUT</button></form>
-                <form action="/admin/contact" method="POST" onsubmit="showLoader()" class="grid grid-cols-2 gap-2 mb-3"><input name="kpay_no" placeholder="KPay No" class="bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white"><input name="wave_no" placeholder="Wave No" class="bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white"><button class="col-span-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 text-xs font-bold transition shadow-md">Update Contact</button></form>
-                <form action="/admin/tip" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="tip" placeholder="Lucky Tip Text" class="flex-1 bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white focus:border-blue-500 outline-none"><button class="bg-purple-600 hover:bg-purple-700 text-white px-4 rounded-lg text-xs font-bold transition shadow-md">TIP</button></form>
-                <form action="/admin/add_history" method="POST" onsubmit="showLoader()" class="flex gap-2 mt-3"><input name="date" type="date" class="w-1/3 bg-slate-800 border-slate-600 rounded p-2 text-xs text-white"><input name="morning" placeholder="M" class="w-1/4 bg-slate-800 border-slate-600 rounded p-2 text-center text-xs text-white"><input name="evening" placeholder="E" class="w-1/4 bg-slate-800 border-slate-600 rounded p-2 text-center text-xs text-white"><button class="bg-gray-600 text-white w-1/6 rounded text-xs shadow-md">Save</button></form>
+                <form action="/admin/topup" method="POST" class="flex gap-2 mb-3"><input name="username" placeholder="User" class="w-1/3 bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white focus:border-blue-500 outline-none"><input name="amount" placeholder="Amount" type="number" class="w-1/3 bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white focus:border-blue-500 outline-none"><button class="bg-green-600 hover:bg-green-700 text-white w-1/3 rounded-lg text-xs font-bold transition shadow-md">TOPUP</button></form>
+                <form action="/admin/payout" method="POST" class="flex gap-2 mb-3"><select name="session" class="w-1/3 bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white outline-none"><option value="MORNING">12:01</option><option value="EVENING">04:30</option></select><input name="win_number" placeholder="Win No" class="w-1/3 bg-slate-800 border border-slate-600 rounded-lg p-2 text-center text-xs text-white focus:border-blue-500 outline-none"><button class="bg-red-600 hover:bg-red-700 text-white w-1/3 rounded-lg text-xs font-bold transition shadow-md">PAYOUT</button></form>
+                <form action="/admin/contact" method="POST" class="grid grid-cols-2 gap-2 mb-3"><input name="kpay_no" placeholder="KPay No" class="bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white"><input name="wave_no" placeholder="Wave No" class="bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white"><button class="col-span-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 text-xs font-bold transition shadow-md">Update Contact</button></form>
+                <form action="/admin/tip" method="POST" class="flex gap-2"><input name="tip" placeholder="Lucky Tip Text" class="flex-1 bg-slate-800 border border-slate-600 rounded-lg p-2 text-xs text-white focus:border-blue-500 outline-none"><button class="bg-purple-600 hover:bg-purple-700 text-white px-4 rounded-lg text-xs font-bold transition shadow-md">TIP</button></form>
+                <form action="/admin/add_history" method="POST" class="flex gap-2 mt-3"><input name="date" type="date" class="w-1/3 bg-slate-800 border-slate-600 rounded p-2 text-xs text-white"><input name="morning" placeholder="M" class="w-1/4 bg-slate-800 border-slate-600 rounded p-2 text-center text-xs text-white"><input name="evening" placeholder="E" class="w-1/4 bg-slate-800 border-slate-600 rounded p-2 text-center text-xs text-white"><button class="bg-gray-600 text-white w-1/6 rounded text-xs shadow-md">Save</button></form>
             </div>` : ''}
 
             <div class="glass-card p-4 rounded-xl border-2 border-slate-600">
                 <h3 class="text-xs font-bold text-slate-400 mb-3 uppercase tracking-wider">Security</h3>
-                <form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2"><input type="password" name="new_password" placeholder="New Password" class="flex-1 bg-slate-800 border border-slate-600 rounded-lg p-2 text-sm text-white focus:border-blue-500 outline-none" required><button class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-xs font-bold transition shadow-md">CHANGE</button></form>
+                <form action="/change_password" method="POST" class="flex gap-2"><input type="password" name="new_password" placeholder="New Password" class="flex-1 bg-slate-800 border border-slate-600 rounded-lg p-2 text-sm text-white focus:border-blue-500 outline-none" required><button class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-xs font-bold transition shadow-md">CHANGE</button></form>
             </div>
 
             <div class="glass-card p-4 rounded-xl border-2 border-slate-600">
                 <h3 class="text-xs font-bold text-slate-400 mb-3 uppercase tracking-wider">Contact Admin</h3>
                 <div class="grid grid-cols-2 gap-2">
-                    <div class="bg-blue-500/10 border border-blue-500/30 p-3 rounded-xl text-center"><div class="text-xs text-blue-400 font-bold mb-1">KPay</div><div class="text-sm font-bold text-white select-all">${contact.kpay_no}</div></div>
-                    <div class="bg-yellow-500/10 border border-yellow-500/30 p-3 rounded-xl text-center"><div class="text-xs text-yellow-400 font-bold mb-1">Wave</div><div class="text-sm font-bold text-white select-all">${contact.wave_no}</div></div>
+                    <div class="bg-blue-500/10 border border-blue-500/20 p-3 rounded-xl text-center"><div class="text-xs text-blue-400 font-bold mb-1">KPay</div><div class="text-sm font-bold text-white select-all">${contact.kpay_no}</div></div>
+                    <div class="bg-yellow-500/10 border border-yellow-500/20 p-3 rounded-xl text-center"><div class="text-xs text-yellow-400 font-bold mb-1">Wave</div><div class="text-sm font-bold text-white select-all">${contact.wave_no}</div></div>
                     <a href="${contact.tele_link}" target="_blank" class="col-span-2 bg-blue-600 text-white p-3 rounded-xl text-center font-bold text-sm flex items-center justify-center gap-2 hover:bg-blue-700 transition shadow-lg shadow-blue-600/20"><i class="fab fa-telegram text-xl"></i> Contact on Telegram</a>
                 </div>
             </div>
@@ -484,11 +481,11 @@ serve(async (req) => {
                 <h3 class="text-xs font-bold text-slate-400 mb-3 uppercase tracking-wider">Transaction History</h3>
                 <div class="space-y-2 h-40 overflow-y-auto history-scroll">
                     ${transactions.length === 0 ? '<div class="text-center text-slate-600 text-xs py-4">No transactions</div>' : ''}
-                    ${transactions.map(tx => `<div class="flex justify-between items-center p-3 bg-slate-800/50 rounded-lg border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}"><div class="text-xs text-slate-400">${tx.time}</div><div class="font-bold text-sm text-white">+${tx.amount.toLocaleString()}</div></div>`).join('')}
+                    ${transactions.map(tx => `<div class="flex justify-between items-center p-3 bg-slate-800/50 rounded-lg border-l-2 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}"><div class="text-xs text-slate-400">${tx.time}</div><div class="font-bold text-sm text-white">+${tx.amount.toLocaleString()}</div></div>`).join('')}
                 </div>
             </div>
         </div>
-        <script>function uploadAvatar(input) { if(input.files && input.files[0]) { const file = input.files[0]; const reader = new FileReader(); reader.onload = function(e) { const img = new Image(); img.src = e.target.result; img.onload = function() { const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d'); const size = 150; canvas.width = size; canvas.height = size; let sSize = Math.min(img.width, img.height); let sx = (img.width - sSize) / 2; let sy = (img.height - sSize) / 2; ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size); const dataUrl = canvas.toDataURL('image/jpeg', 0.7); const fd = new FormData(); fd.append('avatar', dataUrl); showLoader(); fetch('/update_avatar', { method: 'POST', body: fd }).then(res => res.json()).then(d => { hideLoader(); if(d.status==='success') location.reload(); else Toast.fire({icon:'error',title:'Upload failed'}); }); } }; reader.readAsDataURL(file); } } const p = new URLSearchParams(window.location.search); if(p.get('status')==='pass_changed') Toast.fire({icon:'success',title:'Password Updated 🔒'});</script>
+        <script>function uploadAvatar(input) { if(input.files && input.files[0]) { const file = input.files[0]; const reader = new FileReader(); reader.onload = function(e) { const img = new Image(); img.src = e.target.result; img.onload = function() { const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d'); const size = 150; canvas.width = size; canvas.height = size; let sSize = Math.min(img.width, img.height); let sx = (img.width - sSize) / 2; let sy = (img.height - sSize) / 2; ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size); const dataUrl = canvas.toDataURL('image/jpeg', 0.7); const fd = new FormData(); fd.append('avatar', dataUrl); fetch('/update_avatar', { method: 'POST', body: fd }).then(res => res.json()).then(d => { if(d.status==='success') location.reload(); else Toast.fire({icon:'error',title:'Upload failed'}); }); } }; reader.readAsDataURL(file); } } const p = new URLSearchParams(window.location.search); if(p.get('status')==='pass_changed') Toast.fire({icon:'success',title:'Password Updated 🔒'});</script>
       `;
   }
   else {
@@ -561,13 +558,23 @@ serve(async (req) => {
             
             async function placeBet(e){ 
                 e.preventDefault(); 
-                showLoader(); 
+                
+                // MANUAL SPINNER START
+                const btn = e.target.querySelector('button');
+                const originalText = btn.innerHTML;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+                btn.disabled = true;
+
                 const fd=new FormData(e.target); 
                 try{ 
                     const res=await fetch('/bet',{method:'POST',body:fd}); 
                     if(!res.ok) throw new Error("Server Error");
                     const d=await res.json(); 
-                    hideLoader();
+                    
+                    // SPINNER STOP
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+
                     if(d.status==='success'){ closeBetModal(); Toast.fire({icon:'success',title:'Bet Placed! 🍀'}); showVoucher(d.voucher); }
                     else if(d.status==='blocked') Swal.fire({icon:'error',title:'Blocked',text:'Number '+d.num+' is closed',confirmButtonColor:'#d33'});
                     else if(d.status==='insufficient_balance') Swal.fire({icon:'error',title:'Error',text:'Insufficient Balance',confirmButtonColor:'#d33'});
@@ -576,7 +583,9 @@ serve(async (req) => {
                     else if(d.status==='error_max') Swal.fire({icon:'error',title:'Limit',text:'Max bet is 100,000 Ks',confirmButtonColor:'#d33'});
                     else Swal.fire('Error','Invalid Bet','error'); 
                 } catch(e){
-                    hideLoader();
+                    // ERROR STOP
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
                     Toast.fire({icon:'error',title:'Connection Failed'});
                 } 
             }
