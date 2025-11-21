@@ -3,7 +3,7 @@ import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
 
 const kv = await Deno.openKv();
 
-// --- SECURITY HELPERS ---
+// --- SECURITY HELPER: PASSWORD HASHING ---
 async function hashPassword(password: string, salt: string) {
   const encoder = new TextEncoder();
   const data = encoder.encode(password + salt);
@@ -11,17 +11,8 @@ async function hashPassword(password: string, salt: string) {
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 function generateId() { return crypto.randomUUID(); }
-async function isRateLimited(req: Request, limitType: string, maxRequests: number) {
-  const ip = req.headers.get("x-forwarded-for") || "unknown";
-  const key = ["ratelimit", limitType, ip];
-  const entry = await kv.get(key);
-  const current = (entry.value as number) || 0;
-  if (current >= maxRequests) return true;
-  await kv.set(key, current + 1, { expireIn: 60000 }); 
-  return false;
-}
 
-// --- CRON JOB ---
+// --- CRON JOB: AUTO SAVE HISTORY ---
 Deno.cron("Save History", "*/10 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
@@ -64,102 +55,76 @@ serve(async (req) => {
   }
   
   // =========================
-  // 1. AUTH
+  // 1. AUTH (SECURE)
   // =========================
   const cookieOptions = "; Path=/; HttpOnly; Max-Age=1296000"; 
 
   if (req.method === "POST" && url.pathname === "/register") {
-    if (await isRateLimited(req, "register", 5)) return new Response("Too many attempts", { status: 429 });
-
     const form = await req.formData();
-    const username = form.get("username")?.toString().toLowerCase().trim();
+    const username = form.get("username")?.toString().trim();
     const password = form.get("password")?.toString();
-    const remember = form.get("remember") === "on";
 
     if (!username || !password) return Response.redirect(url.origin + "/?error=missing_fields");
-    if (username.length < 3 || password.length < 6) return Response.redirect(url.origin + "/?error=weak_password");
 
     const userEntry = await kv.get(["users", username]);
     if (userEntry.value) return Response.redirect(url.origin + "/?error=user_exists");
 
+    // HASH PASSWORD
     const salt = generateId();
     const hashedPassword = await hashPassword(password, salt);
 
     await kv.set(["users", username], { 
-        passwordHash: hashedPassword, 
-        salt: salt, 
-        balance: 0, 
-        avatar: "" 
+        passwordHash: hashedPassword, // Storing Hash, NOT plain text
+        salt: salt,
+        balance: 0 
     });
     
-    const newSessionId = generateId();
-    const maxAge = remember ? 1296000 : 86400; 
-    await kv.set(["sessions", newSessionId], username, { expireIn: maxAge });
-    
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax`);
+    headers.set("Set-Cookie", `user=${encodeURIComponent(username)}${cookieOptions}`);
     return new Response(null, { status: 303, headers });
   }
 
   if (req.method === "POST" && url.pathname === "/login") {
-    if (await isRateLimited(req, "login", 10)) return new Response("Too many attempts", { status: 429 });
-
     const form = await req.formData();
-    const username = form.get("username")?.toString().toLowerCase().trim();
+    const username = form.get("username")?.toString().trim();
     const password = form.get("password")?.toString();
-    const remember = form.get("remember") === "on";
 
     const userEntry = await kv.get(["users", username]);
     const userData = userEntry.value as any;
 
     if (!userData) return Response.redirect(url.origin + "/?error=invalid_login");
 
+    // VERIFY HASH
     const inputHash = await hashPassword(password, userData.salt || "");
+    // Support both old plain text (for legacy) and new hash
     const isValid = userData.passwordHash ? (inputHash === userData.passwordHash) : (password === userData.password);
 
     if (!isValid) {
        return Response.redirect(url.origin + "/?error=invalid_login");
     }
 
+    // Upgrade legacy account to hash if needed
     if (!userData.passwordHash) {
         const salt = generateId();
         const newHash = await hashPassword(password, salt);
-        const { password: _, ...rest } = userData;
+        const { password: _, ...rest } = userData; // Remove plain password
         await kv.set(["users", username], { ...rest, passwordHash: newHash, salt: salt });
     }
 
-    const newSessionId = generateId();
-    const maxAge = remember ? 1296000 : 86400;
-    await kv.set(["sessions", newSessionId], username, { expireIn: maxAge });
-
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `session_id=${newSessionId}; Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax`);
+    headers.set("Set-Cookie", `user=${encodeURIComponent(username)}${cookieOptions}`);
     return new Response(null, { status: 303, headers });
   }
 
   if (url.pathname === "/logout") {
-    const cookies = req.headers.get("Cookie") || "";
-    const sessionMatch = cookies.match(/session_id=([^;]+)/);
-    if (sessionMatch) await kv.delete(["sessions", sessionMatch[1]]);
-    
     const headers = new Headers({ "Location": "/" });
-    headers.set("Set-Cookie", `session_id=; Path=/; Max-Age=0`);
+    headers.set("Set-Cookie", `user=; Path=/; Max-Age=0`);
     return new Response(null, { status: 303, headers });
   }
 
-  // CHECK SESSION
   const cookies = req.headers.get("Cookie") || "";
-  const sessionMatch = cookies.match(/session_id=([^;]+)/);
-  const sessionId = sessionMatch ? sessionMatch[1] : null;
-  
-  let currentUser = null;
-  if (sessionId) {
-      const sessionEntry = await kv.get(["sessions", sessionId]);
-      if (sessionEntry.value) {
-          currentUser = sessionEntry.value as string;
-          await kv.set(["sessions", sessionId], currentUser, { expireIn: 1296000 }); 
-      }
-  }
+  const userCookie = cookies.split(";").find(c => c.trim().startsWith("user="));
+  const currentUser = userCookie ? decodeURIComponent(userCookie.split("=")[1].trim()) : null;
   const isAdmin = currentUser === "admin";
 
   // =========================
@@ -180,7 +145,7 @@ serve(async (req) => {
   if (req.method === "POST" && url.pathname === "/change_password" && currentUser) {
       const form = await req.formData();
       const newPass = form.get("new_password")?.toString();
-      if (newPass && newPass.length >= 6) {
+      if (newPass) {
           const userEntry = await kv.get(["users", currentUser]);
           const userData = userEntry.value as any;
           
@@ -210,8 +175,6 @@ serve(async (req) => {
   }
 
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
-    if (await isRateLimited(req, "bet", 60)) return new Response(JSON.stringify({ status: "slow_down" }), { headers: { "content-type": "application/json" } });
-
     const now = new Date();
     const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
     const timePart = mmString.split(", ")[1];
@@ -228,7 +191,6 @@ serve(async (req) => {
     const amount = parseInt(form.get("amount")?.toString() || "0");
     
     if(!numbersRaw || amount <= 0) return new Response(JSON.stringify({ status: "invalid_bet" }), { headers: { "content-type": "application/json" } });
-
     if (amount < 50) return new Response(JSON.stringify({ status: "error_min" }), { headers: { "content-type": "application/json" } });
     if (amount > 100000) return new Response(JSON.stringify({ status: "error_max" }), { headers: { "content-type": "application/json" } });
 
@@ -267,7 +229,7 @@ serve(async (req) => {
   if (isAdmin && req.method === "POST") {
     if (url.pathname === "/admin/topup") {
       const form = await req.formData();
-      const targetUser = form.get("username")?.toString().toLowerCase().trim();
+      const targetUser = form.get("username")?.toString().trim();
       const amount = parseInt(form.get("amount")?.toString() || "0");
       if(targetUser) {
         const userEntry = await kv.get(["users", targetUser]);
@@ -282,12 +244,13 @@ serve(async (req) => {
     
     if (url.pathname === "/admin/reset_pass") {
         const form = await req.formData();
-        const targetUser = form.get("username")?.toString().toLowerCase().trim();
+        const targetUser = form.get("username")?.toString().trim();
         const newPass = form.get("password")?.toString();
         if (targetUser && newPass) {
             const userEntry = await kv.get(["users", targetUser]);
             const userData = userEntry.value as any;
             if (userData) {
+                // RESET PASSWORD SECURELY
                 const salt = generateId();
                 const hashedPassword = await hashPassword(newPass, salt);
                 await kv.set(["users", targetUser], { ...userData, passwordHash: hashedPassword, salt: salt });
@@ -391,11 +354,9 @@ serve(async (req) => {
   const commonHead = `
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
         body { font-family: 'Roboto', sans-serif; background-color: #4a3b32; color: white; -webkit-tap-highlight-color: transparent; }
@@ -426,25 +387,8 @@ serve(async (req) => {
         .animate-gradient-x { background-size: 200% 200%; animation: gradient-move 3s ease infinite; }
         @keyframes gradient-move { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
         .text-shadow { text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
-        
-        /* TOAST STYLES */
-        .swal2-popup.swal2-toast { font-size: 0.8rem !important; }
     </style>
     <script>
-        // 1. Toast Notification Config
-        const Toast = Swal.mixin({
-          toast: true,
-          position: 'top-end',
-          showConfirmButton: false,
-          timer: 3000,
-          timerProgressBar: true,
-          didOpen: (toast) => {
-            toast.addEventListener('mouseenter', Swal.stopTimer)
-            toast.addEventListener('mouseleave', Swal.resumeTimer)
-          }
-        });
-
-        // 2. Loader Logic (No spinner on normal links)
         window.addEventListener('load', () => { 
             const l = document.getElementById('app-loader'); 
             if(l) {
@@ -486,7 +430,14 @@ serve(async (req) => {
       const contactEntry = await kv.get(["system", "contact"]);
       const contact = contactEntry.value as any || { kpay_no: "09-", kpay_name: "Admin", wave_no: "09-", wave_name: "Admin", tele_link: "#", kpay_img: "", wave_img: "" };
 
-      return new Response(`<!DOCTYPE html><html lang="en"><head><title>Profile</title>${commonHead}</head><body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">${loaderHTML}<div class="bg-[#4a3b32] text-white p-6 rounded-b-3xl shadow-lg text-center relative"><a href="/" class="absolute left-4 top-4 text-white/80 text-2xl"><i class="fas fa-arrow-left"></i></a><div class="relative w-24 h-24 mx-auto mb-3"><div class="w-24 h-24 rounded-full border-4 border-white/20 bg-white overflow-hidden flex items-center justify-center relative">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-[#4a3b32]"></i>`}</div><button onclick="document.getElementById('pInput').click()" class="absolute bottom-0 right-0 bg-yellow-500 text-white rounded-full p-2 shadow-lg border-2 border-[#4a3b32]"><i class="fas fa-camera text-xs"></i></button><input type="file" id="pInput" hidden accept="image/*" onchange="uploadAvatar(this)"></div><h1 class="text-xl font-bold uppercase">${currentUser}</h1><p class="text-white/70 text-sm">${balance.toLocaleString()} Ks</p></div><div class="p-4 space-y-4">${isAdmin ? `<div class="bg-white p-4 rounded-xl shadow-sm border-l-4 border-purple-500"><h3 class="font-bold text-purple-600 mb-3"><i class="fas fa-calendar-plus mr-2"></i>Add Past History</h3><form action="/admin/add_history" method="POST" onsubmit="showLoader()" class="space-y-2"><input name="date" type="date" class="w-full border rounded p-2 text-sm" required><div class="flex gap-2"><input name="morning" placeholder="12:01 (e.g 41)" class="w-1/2 border rounded p-2 text-center"><input name="evening" placeholder="4:30 (e.g 92)" class="w-1/2 border rounded p-2 text-center"></div><button class="bg-purple-600 text-white w-full py-2 rounded font-bold text-xs">SAVE RECORD</button></form></div>` : ''}<div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-lock text-yellow-500 mr-2"></i>Change Password</h3><form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2"><input type="password" name="new_password" placeholder="New Password" class="flex-1 border rounded p-2 text-sm" required><button class="bg-[#4a3b32] text-white px-4 py-2 rounded text-sm font-bold">Save</button></form></div><div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100 relative overflow-hidden"><img src="${contact.kpay_img || 'https://img.icons8.com/color/48/k-pay.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">KPay</div><div class="text-sm font-bold text-blue-800 select-all">${contact.kpay_no}</div><div class="text-[10px] text-gray-400">${contact.kpay_name}</div></div><div class="bg-yellow-50 p-3 rounded-lg text-center border border-yellow-100 relative overflow-hidden"><img src="${contact.wave_img || 'https://img.icons8.com/fluency/48/wave-money.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">Wave</div><div class="text-sm font-bold text-yellow-800 select-all">${contact.wave_no}</div><div class="text-[10px] text-gray-400">${contact.wave_name}</div></div><a href="${contact.tele_link}" target="_blank" class="col-span-2 bg-blue-500 text-white p-3 rounded-lg text-center font-bold flex items-center justify-center gap-2 hover:bg-blue-600"><i class="fab fa-telegram text-2xl"></i> Contact on Telegram</a></div></div><div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-history text-green-500 mr-2"></i>Transaction History</h3><div class="space-y-2 h-60 overflow-y-auto history-scroll">${transactions.length === 0 ? '<div class="text-center text-gray-400 text-xs py-4">No transactions yet</div>' : ''}${transactions.map(tx => `<div class="flex justify-between items-center p-2 bg-gray-50 rounded border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}"><div><div class="text-sm font-bold text-gray-700">${tx.type}</div><div class="text-xs text-gray-400">${tx.time}</div></div><div class="font-bold text-gray-700">+${tx.amount.toLocaleString()}</div></div>`).join('')}</div></div></div><script>const p=new URLSearchParams(window.location.search);if(p.get('status')==='pass_changed')Toast.fire({icon:'success',title:'Password Updated! 🔒'});if(p.get('status')==='error')Toast.fire({icon:'error',title:'Error updating!'}); function uploadAvatar(input) { if(input.files && input.files[0]) { const file = input.files[0]; const reader = new FileReader(); reader.onload = function(e) { const img = new Image(); img.src = e.target.result; img.onload = function() { const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d'); const size = 150; canvas.width = size; canvas.height = size; let sSize = Math.min(img.width, img.height); let sx = (img.width - sSize) / 2; let sy = (img.height - sSize) / 2; ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size); const dataUrl = canvas.toDataURL('image/jpeg', 0.7); const fd = new FormData(); fd.append('avatar', dataUrl); showLoader(); fetch('/update_avatar', { method: 'POST', body: fd }).then(res => res.json()).then(d => { hideLoader(); if(d.status==='success') location.reload(); else Swal.fire('Error', 'Upload failed', 'error'); }); } }; reader.readAsDataURL(file); } } </script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+      return new Response(`<!DOCTYPE html><html lang="en"><head><title>Profile</title>${commonHead}</head><body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">${loaderHTML}<div class="bg-[#4a3b32] text-white p-6 rounded-b-3xl shadow-lg text-center relative"><a href="/" onclick="showLoader()" class="absolute left-4 top-4 text-white/80 text-2xl"><i class="fas fa-arrow-left"></i></a><div class="relative w-24 h-24 mx-auto mb-3"><div class="w-24 h-24 rounded-full border-4 border-white/20 bg-white overflow-hidden flex items-center justify-center relative">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-[#4a3b32]"></i>`}</div><button onclick="document.getElementById('pInput').click()" class="absolute bottom-0 right-0 bg-yellow-500 text-white rounded-full p-2 shadow-lg border-2 border-[#4a3b32]"><i class="fas fa-camera text-xs"></i></button><input type="file" id="pInput" hidden accept="image/*" onchange="uploadAvatar(this)"></div><h1 class="text-xl font-bold uppercase">${currentUser}</h1><p class="text-white/70 text-sm">${balance.toLocaleString()} Ks</p></div><div class="p-4 space-y-4">${isAdmin ? `<div class="bg-white p-4 rounded-xl shadow-sm border-l-4 border-purple-500"><h3 class="font-bold text-purple-600 mb-3"><i class="fas fa-calendar-plus mr-2"></i>Add Past History</h3><form action="/admin/add_history" method="POST" onsubmit="showLoader()" class="space-y-2"><input name="date" type="date" class="w-full border rounded p-2 text-sm" required><div class="flex gap-2"><input name="morning" placeholder="12:01 (e.g 41)" class="w-1/2 border rounded p-2 text-center"><input name="evening" placeholder="4:30 (e.g 92)" class="w-1/2 border rounded p-2 text-center"></div><button class="bg-purple-600 text-white w-full py-2 rounded font-bold text-xs">SAVE RECORD</button></form></div>` : ''}<div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-lock text-yellow-500 mr-2"></i>Change Password</h3><form action="/change_password" method="POST" onsubmit="showLoader()" class="flex gap-2"><input type="password" name="new_password" placeholder="New Password" class="flex-1 border rounded p-2 text-sm" required><button class="bg-[#4a3b32] text-white px-4 py-2 rounded text-sm font-bold">Save</button></form></div><div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-headset text-blue-500 mr-2"></i>Contact Admin</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-50 p-3 rounded-lg text-center border border-blue-100 relative overflow-hidden"><img src="${contact.kpay_img || 'https://img.icons8.com/color/48/k-pay.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">KPay</div><div class="text-sm font-bold text-blue-800 select-all">${contact.kpay_no}</div><div class="text-[10px] text-gray-400">${contact.kpay_name}</div></div><div class="bg-yellow-50 p-3 rounded-lg text-center border border-yellow-100 relative overflow-hidden"><img src="${contact.wave_img || 'https://img.icons8.com/fluency/48/wave-money.png'}" class="w-8 h-8 mx-auto mb-1 object-cover rounded-full"><div class="text-xs text-gray-500 font-bold">Wave</div><div class="text-sm font-bold text-yellow-800 select-all">${contact.wave_no}</div><div class="text-[10px] text-gray-400">${contact.wave_name}</div></div><a href="${contact.tele_link}" target="_blank" class="col-span-2 bg-blue-500 text-white p-3 rounded-lg text-center font-bold flex items-center justify-center gap-2 hover:bg-blue-600"><i class="fab fa-telegram text-2xl"></i> Contact on Telegram</a></div></div><div class="bg-white p-4 rounded-xl shadow-sm"><h3 class="font-bold text-gray-600 mb-3"><i class="fas fa-history text-green-500 mr-2"></i>Transaction History</h3><div class="space-y-2 h-60 overflow-y-auto history-scroll">${transactions.length === 0 ? '<div class="text-center text-gray-400 text-xs py-4">No transactions yet</div>' : ''}${transactions.map(tx => `<div class="flex justify-between items-center p-2 bg-gray-50 rounded border-l-4 ${tx.type==='TOPUP'?'border-green-500':'border-red-500'}"><div><div class="text-sm font-bold text-gray-700">${tx.type}</div><div class="text-xs text-gray-400">${tx.time}</div></div><div class="font-bold text-gray-700">+${tx.amount.toLocaleString()}</div></div>`).join('')}</div></div></div><script>const p=new URLSearchParams(window.location.search);if(p.get('status')==='pass_changed')Swal.fire('Success','Password Changed Successfully!','success');if(p.get('status')==='error')Swal.fire('Error','Something went wrong','error'); function uploadAvatar(input) { if(input.files && input.files[0]) { const file = input.files[0]; const reader = new FileReader(); reader.onload = function(e) { const img = new Image(); img.src = e.target.result; img.onload = function() { const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d'); const size = 150; canvas.width = size; canvas.height = size; let sSize = Math.min(img.width, img.height); let sx = (img.width - sSize) / 2; let sy = (img.height - sSize) / 2; ctx.drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size); const dataUrl = canvas.toDataURL('image/jpeg', 0.7); const fd = new FormData(); fd.append('avatar', dataUrl); showLoader(); fetch('/update_avatar', { method: 'POST', body: fd }).then(res => res.json()).then(d => { hideLoader(); if(d.status==='success') location.reload(); else Swal.fire('Error', 'Upload failed', 'error'); }); } }; reader.readAsDataURL(file); } } </script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+  }
+
+  if (url.pathname === "/history") {
+      const historyList = [];
+      const hIter = kv.list({ prefix: ["history"] }, { reverse: true });
+      for await (const entry of hIter) historyList.push(entry.value);
+      return new Response(`<!DOCTYPE html><html lang="en"><head><title>History</title>${commonHead}</head><body class="max-w-md mx-auto min-h-screen bg-gray-100 text-gray-800">${loaderHTML}<div class="bg-[#4a3b32] text-white p-4 shadow-lg flex items-center gap-4 sticky top-0 z-50"><a href="/" onclick="showLoader()" class="text-2xl"><i class="fas fa-arrow-left"></i></a><h1 class="text-xl font-bold">2D History</h1></div><div class="p-4 space-y-2"><div class="grid grid-cols-3 bg-gray-200 p-2 rounded font-bold text-center text-xs text-gray-600"><div>Date</div><div>12:01 PM</div><div>04:30 PM</div></div>${historyList.length === 0 ? '<div class="text-center p-4 text-gray-400">No history yet</div>' : ''}${historyList.map((h: any) => `<div class="grid grid-cols-3 bg-white p-3 rounded shadow-sm text-center items-center border-b"><div class="text-xs font-bold text-gray-500">${h.date}</div><div class="text-lg font-bold text-blue-600">${h.morning}</div><div class="text-lg font-bold text-purple-600">${h.evening}</div></div>`).join('')}</div></body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
   const bets = [];
@@ -532,7 +483,7 @@ serve(async (req) => {
     <body class="max-w-md mx-auto min-h-screen bg-gray-100 pb-10 text-gray-800">
       ${loaderHTML} ${splashHTML}
       <nav class="bg-theme h-14 flex justify-between items-center px-4 text-white shadow-md sticky top-0 z-50">
-        <a href="/profile" class="font-bold text-lg uppercase tracking-wider flex items-center gap-2">
+        <a href="/profile" onclick="showLoader()" class="font-bold text-lg uppercase tracking-wider flex items-center gap-2">
             ${avatar ? `<img src="${avatar}" class="w-8 h-8 rounded-full border border-white">` : `<i class="fas fa-user-circle text-2xl"></i>`}
             ${currentUser}
         </a>
@@ -546,7 +497,7 @@ serve(async (req) => {
         <div class="card-gradient rounded-2xl p-6 text-center text-white shadow-lg relative overflow-hidden">
           <div class="flex justify-between items-center mb-2 text-gray-300 text-sm"><span id="live_date">Today</span><span class="flex items-center gap-1"><i class="fas fa-circle text-green-500 text-[10px]"></i> Live</span></div>
           <div class="py-2"><div id="live_twod" class="text-8xl font-bold tracking-tighter drop-shadow-md">--</div><div class="text-sm mt-2 opacity-80">Update: <span id="live_time">--:--:--</span></div></div>
-          <div class="mt-4 border-t border-white/20 pt-2"><a href="/history" class="text-xs text-yellow-300 font-bold flex items-center justify-center gap-1 hover:text-white"><i class="fas fa-calendar-alt"></i> View 2D History</a></div>
+          <div class="mt-4 border-t border-white/20 pt-2"><a href="/history" onclick="showLoader()" class="text-xs text-yellow-300 font-bold flex items-center justify-center gap-1 hover:text-white"><i class="fas fa-calendar-alt"></i> View 2D History</a></div>
         </div>
       </div>
 
@@ -600,51 +551,28 @@ serve(async (req) => {
 
       <script>
         const p = new URLSearchParams(window.location.search);
-        if(p.get('status')==='market_closed') Toast.fire({icon:'warning',title:'Market Closed! ⛔'});
-        if(p.get('status')==='error_min') Toast.fire({icon:'error',title:'Min bet 50 Ks'});
-        if(p.get('status')==='error_max') Toast.fire({icon:'error',title:'Max bet 100,000 Ks'});
+        if(p.get('status')==='market_closed') Swal.fire({icon:'warning',title:'Market Closed',text:'Betting is currently closed.',confirmButtonColor:'#d97736'});
+        if(p.get('status')==='error_min') Swal.fire({icon:'error',title:'Invalid Amount',text:'Minimum bet is 50 Ks',confirmButtonColor:'#d33'});
+        if(p.get('status')==='error_max') Swal.fire({icon:'error',title:'Invalid Amount',text:'Maximum bet is 100,000 Ks',confirmButtonColor:'#d33'});
+        if(p.get('status')==='slow_down') Swal.fire({icon:'warning',title:'Whoa!',text:'Please slow down (1 request/sec).',confirmButtonColor:'#d97736'});
 
         function filterHistory() { const i = document.getElementById('historySearch'); const f = i.value.trim(); const l = document.getElementById('historyList'); const it = l.getElementsByClassName('history-item'); for(let x=0;x<it.length;x++){ const s = it[x].querySelector('.bet-number'); const t = s.textContent||s.innerText; if(t.indexOf(f)>-1) it[x].style.display=""; else it[x].style.display="none"; } }
-        function confirmClearHistory() { Swal.fire({title:'Clear History?',text:"Only finished bets removed.",icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'Yes'}).then((r)=>{if(r.isConfirmed){showLoader();fetch('/clear_history',{method:'POST'}).then(res=>res.json()).then(d=>{hideLoader();Toast.fire({icon:'success',title:'History Cleared!'}).then(()=>window.location.reload());});}}) }
+        function confirmClearHistory() { Swal.fire({title:'Clear History?',text:"Only finished bets removed.",icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'Yes'}).then((r)=>{if(r.isConfirmed){showLoader();fetch('/clear_history',{method:'POST'}).then(res=>res.json()).then(d=>{hideLoader();Swal.fire('Cleared!',d.count+' records removed.','success').then(()=>window.location.reload());});}}) }
         let currentQuickMode = '';
         function openBetModal() { document.getElementById('betModal').classList.remove('hidden'); }
         function closeBetModal() { document.getElementById('betModal').classList.add('hidden'); }
         function setTab(tab) { const d = document.getElementById('tabDirectContent'); const q = document.getElementById('tabQuickContent'); const bd = document.getElementById('btnDirect'); const bq = document.getElementById('btnQuick'); if(tab==='direct'){ d.classList.remove('hidden'); q.classList.add('hidden'); bd.className="flex-1 py-2 rounded tab-active"; bq.className="flex-1 py-2 rounded tab-inactive"; } else{ d.classList.add('hidden'); q.classList.remove('hidden'); bd.className="flex-1 py-2 rounded tab-inactive"; bq.className="flex-1 py-2 rounded tab-active"; } }
-        function quickBet(mode) { const a = document.getElementById('quickInputArea'); const l = document.getElementById('quickLabel'); const i = document.getElementById('quickVal'); if (mode === 'double') { addNumbers(generateDouble()); a.classList.add('hidden'); Toast.fire({icon:'success',title:'Double Added!'}); } else { currentQuickMode = mode; a.classList.remove('hidden'); i.value = ''; i.focus(); l.innerText = mode === 'brake' ? 'Enter Number (e.g. 12):' : 'Enter Digit (e.g. 5):'; } }
-        function generateNumbers() { const v = document.getElementById('quickVal').value; if(!v) return; let n = []; if(currentQuickMode==='head') n=generateHead(v); if(currentQuickMode==='tail') n=generateTail(v); if(currentQuickMode==='brake') n=generateBrake(v); addNumbers(n); document.getElementById('quickVal').value=''; Toast.fire({icon:'success',title:'Numbers Added!'}); }
+        function quickBet(mode) { const a = document.getElementById('quickInputArea'); const l = document.getElementById('quickLabel'); const i = document.getElementById('quickVal'); if (mode === 'double') { addNumbers(generateDouble()); a.classList.add('hidden'); Swal.fire('Added', 'Double numbers added!', 'success'); } else { currentQuickMode = mode; a.classList.remove('hidden'); i.value = ''; i.focus(); l.innerText = mode === 'brake' ? 'Enter Number (e.g. 12):' : 'Enter Digit (e.g. 5):'; } }
+        function generateNumbers() { const v = document.getElementById('quickVal').value; if(!v) return; let n = []; if(currentQuickMode==='head') n=generateHead(v); if(currentQuickMode==='tail') n=generateTail(v); if(currentQuickMode==='brake') n=generateBrake(v); addNumbers(n); document.getElementById('quickVal').value=''; Swal.fire('Added', n.length+' numbers added!', 'success'); }
         function addNumbers(n) { const i = document.getElementById('numberInput'); let c = i.value.trim(); if(c && !c.endsWith(',')) c += ','; i.value = c + n.join(','); }
         function generateHead(d) { let r=[]; for(let i=0;i<10;i++) r.push(d+i); return r; }
         function generateTail(d) { let r=[]; for(let i=0;i<10;i++) r.push(i+d); return r; }
         function generateDouble() { let r=[]; for(let i=0;i<10;i++) r.push(i+\"\"+i); return r; }
         function generateBrake(n) { if(n.length!==2)return[]; const r=n[1]+n[0]; return n===r?[n]:[n,r]; }
-        async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); Toast.fire({icon:'success',title:'Bet Placed! 🍀'}); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else if (data.status === 'error_min') Swal.fire('Error', 'Minimum bet is 50 Ks', 'error'); else if (data.status === 'error_max') Swal.fire('Error', 'Maximum bet is 100,000 Ks', 'error'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
+        async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else if (data.status === 'error_min') Swal.fire('Error', 'Minimum bet is 50 Ks', 'error'); else if (data.status === 'error_max') Swal.fire('Error', 'Maximum bet is 100,000 Ks', 'error'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
         function showVoucher(v) { const html = \`<div class="voucher-container"><div class="stamp">PAID</div><div class="voucher-header"><h2 class="text-xl font-bold">Myanmar 2D Voucher</h2><div class="text-xs text-gray-500">ID: \${v.id}</div><div class="text-sm mt-1">User: <b>\${v.user}</b></div><div class="text-xs text-gray-400">\${v.date} \${v.time}</div></div><div class="voucher-body">\${v.numbers.map(n => \`<div class="voucher-row"><span>\${n}</span><span>\${v.amountPerNum}</span></div>\`).join('')}</div><div class="voucher-total"><span>TOTAL</span><span>\${v.total} Ks</span></div></div>\`; document.getElementById('voucherContent').innerHTML = html; document.getElementById('voucherModal').classList.remove('hidden'); }
         const API_URL = "https://api.thaistock2d.com/live";
-        async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); 
-            const now = new Date();
-            const mmDate = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Yangon"}));
-            const todayStr = mmDate.getFullYear() + "-" + String(mmDate.getMonth()+1).padStart(2,'0') + "-" + String(mmDate.getDate()).padStart(2,'0');
-            const day = mmDate.getDay(); 
-            const isWeekend = (day === 0 || day === 6);
-            const isSameDay = data.live && data.live.date === todayStr;
-
-            if(data.live) { 
-                document.getElementById('live_twod').innerText = (isSameDay && !isWeekend) ? (data.live.twod || "--") : "--"; 
-                document.getElementById('live_date').innerText = data.live.date || "Today"; 
-                document.getElementById('live_time').innerText = (isSameDay && !isWeekend) ? (data.live.time || "--:--:--") : "--:--:--"; 
-            } 
-            
-            if (data.result) { 
-                if (isSameDay && !isWeekend) {
-                    if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } 
-                    const ev = data.result[3] || data.result[2]; 
-                    if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } 
-                } else {
-                    document.getElementById('set_12').innerText = "--"; document.getElementById('val_12').innerText = "--"; document.getElementById('res_12').innerText = "--";
-                    document.getElementById('set_430').innerText = "--"; document.getElementById('val_430').innerText = "--"; document.getElementById('res_430').innerText = "--";
-                }
-            } 
-        } catch (e) {} } setInterval(updateData, 2000); updateData();
+        async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); if(data.live) { document.getElementById('live_twod').innerText = data.live.twod || "--"; document.getElementById('live_date').innerText = data.live.date || "Today"; document.getElementById('live_time').innerText = data.live.time || "--:--:--"; } if (data.result) { if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } const ev = data.result[3] || data.result[2]; if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } } } catch (e) {} } setInterval(updateData, 2000); updateData();
         function doLogout() { sessionStorage.removeItem('splash_shown'); showLoader(); }
       </script>
     </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
