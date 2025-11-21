@@ -103,6 +103,15 @@ serve(async (req) => {
     
     if(!numbersRaw || amount <= 0) return new Response(JSON.stringify({ status: "invalid_bet" }), { headers: { "content-type": "application/json" } });
 
+    // --- CHECK MIN / MAX LIMITS ---
+    if (amount < 50) {
+        return new Response(JSON.stringify({ status: "error_min" }), { headers: { "content-type": "application/json" } });
+    }
+    if (amount > 100000) {
+        return new Response(JSON.stringify({ status: "error_max" }), { headers: { "content-type": "application/json" } });
+    }
+    // ------------------------------
+
     const numberList = numbersRaw.split(",").filter(n => n.trim() !== "");
     
     for (const num of numberList) {
@@ -177,13 +186,10 @@ serve(async (req) => {
         const form = await req.formData();
         const targetUser = form.get("username")?.toString();
         const newPass = form.get("password")?.toString();
-        
         if (targetUser && newPass) {
             const userEntry = await kv.get(["users", targetUser]);
             const userData = userEntry.value as any;
-            if (userData) {
-                await kv.set(["users", targetUser], { ...userData, password: newPass });
-            }
+            if (userData) await kv.set(["users", targetUser], { ...userData, password: newPass });
         }
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
@@ -203,10 +209,22 @@ serve(async (req) => {
         return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
 
+    // UPDATE PAYOUT RATE
+    if (url.pathname === "/admin/rate") {
+        const form = await req.formData();
+        const rate = parseInt(form.get("rate")?.toString() || "80");
+        await kv.set(["system", "rate"], rate);
+        return new Response(null, { status: 303, headers: { "Location": "/" } });
+    }
+
     if (url.pathname === "/admin/payout") {
       const form = await req.formData();
       const winNumber = form.get("win_number")?.toString();
       const session = form.get("session")?.toString(); 
+
+      // Fetch Current Rate
+      const rateEntry = await kv.get(["system", "rate"]);
+      const payoutRate = (rateEntry.value as number) || 80;
 
       const iter = kv.list({ prefix: ["bets"] });
       for await (const entry of iter) {
@@ -220,7 +238,7 @@ serve(async (req) => {
 
           if (processBet) {
              if (bet.number === winNumber) {
-                const winAmount = bet.amount * 80;
+                const winAmount = bet.amount * payoutRate; // USE DYNAMIC RATE
                 const userEntry = await kv.get(["users", bet.user]);
                 const userData = userEntry.value as any;
                 await kv.set(["users", bet.user], { ...userData, balance: (userData.balance || 0) + winAmount });
@@ -307,35 +325,10 @@ serve(async (req) => {
         .text-shadow { text-shadow: 0 2px 4px rgba(0,0,0,0.2); }
     </style>
     <script>
-        // SPLASH LOGIC: Show only if 'splash_shown' is NOT in sessionStorage
-        window.addEventListener('load', () => { 
-            const l = document.getElementById('app-loader'); 
-            if(l) l.classList.add('hidden-loader'); 
-            
-            const splash = document.getElementById('splash-screen');
-            if (splash) {
-                if (sessionStorage.getItem('splash_shown')) {
-                    splash.style.display = 'none';
-                } else {
-                    // Show splash, then flag it
-                    setTimeout(() => { 
-                        splash.style.opacity='0'; 
-                        setTimeout(() => {
-                            splash.style.display='none';
-                            sessionStorage.setItem('splash_shown', 'true');
-                        }, 700); 
-                    }, 1500);
-                }
-            }
-        });
+        window.addEventListener('load', () => { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); setTimeout(() => { const s = document.getElementById('splash-screen'); if(s) { if(sessionStorage.getItem('splash_shown')){ s.style.display='none'; } else { setTimeout(()=>{s.style.opacity='0'; setTimeout(()=>{s.style.display='none'; sessionStorage.setItem('splash_shown','true');},700);},1500); } } }, 100); });
         function showLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.remove('hidden-loader'); }
         function hideLoader() { const l = document.getElementById('app-loader'); if(l) l.classList.add('hidden-loader'); }
-        
-        // LOGOUT LOGIC: Clear session flag so splash shows on next login
-        function doLogout() {
-            sessionStorage.removeItem('splash_shown');
-            showLoader();
-        }
+        function doLogout() { sessionStorage.removeItem('splash_shown'); showLoader(); }
     </script>
   `;
   const loaderHTML = `<div id="app-loader"><div class="spinner"></div></div>`;
@@ -358,17 +351,13 @@ serve(async (req) => {
           <form id="loginForm" action="/login" method="POST" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
-            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer">
-                <input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)
-            </label>
+            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer"><input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)</label>
             <button class="bg-[#4a3b32] text-white font-bold w-full py-3 rounded-lg hover:bg-[#3d3029]">Login</button>
           </form>
           <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoader()">
             <input type="text" name="username" placeholder="New Username" class="w-full p-3 mb-3 border rounded bg-gray-50" required>
             <input type="password" name="password" placeholder="New Password" class="w-full p-3 mb-4 border rounded bg-gray-50" required>
-            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer">
-                <input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)
-            </label>
+            <label class="flex items-center gap-2 text-xs text-gray-600 mb-4 cursor-pointer"><input type="checkbox" name="remember" class="form-checkbox h-4 w-4 text-[#4a3b32]" checked> Remember Me (15 Days)</label>
             <button class="bg-[#d97736] text-white font-bold w-full py-3 rounded-lg hover:bg-[#b5602b]">Create Account</button>
           </form>
         </div>
@@ -437,6 +426,9 @@ serve(async (req) => {
   const dailyTip = tipEntry.value || "";
   const contactEntry = await kv.get(["system", "contact"]);
   const contact = contactEntry.value as any || { kpay_no: "", kpay_name: "", wave_no: "", wave_name: "", tele_link: "", kpay_img: "", wave_img: "" };
+  
+  const rateEntry = await kv.get(["system", "rate"]);
+  const currentRate = rateEntry.value || 80;
 
   return new Response(`
     <!DOCTYPE html>
@@ -466,27 +458,36 @@ serve(async (req) => {
       ${isAdmin ? `
         <div class="px-4 mb-4 space-y-4">
            <div class="bg-white p-4 rounded shadow border-l-4 border-red-500">
-             <h3 class="font-bold text-red-600 mb-2">Money & Payout</h3>
-             <form action="/admin/topup" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2"><input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm"><input name="amount" placeholder="Amt" type="number" class="w-1/3 border rounded p-1 text-sm"><button class="bg-green-600 text-white w-1/3 rounded text-xs font-bold">Topup</button></form>
+             <h3 class="font-bold text-red-600 mb-2">Payout & Rates</h3>
+             <form action="/admin/rate" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2"><label class="text-xs font-bold mt-2">Ratio:</label><input name="rate" value="${currentRate}" class="w-16 border rounded p-1 text-center font-bold"><button class="bg-gray-700 text-white px-2 rounded text-xs">SET</button></form>
              <form action="/admin/payout" method="POST" onsubmit="showLoader()" class="flex flex-col gap-2 border-t pt-2"><div class="flex gap-2"><select name="session" class="w-1/3 border rounded p-1 bg-gray-50 text-xs font-bold"><option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option></select><input name="win_number" placeholder="Win No" class="w-1/3 border rounded p-1 text-center font-bold"><button class="bg-red-600 text-white w-1/3 rounded text-xs font-bold">PAYOUT</button></div></form>
            </div>
+           
            <div class="bg-white p-4 rounded shadow border-l-4 border-green-500">
-             <h3 class="font-bold text-green-600 mb-2">Payment Settings</h3>
+             <h3 class="font-bold text-green-600 mb-2">Topup</h3>
+             <form action="/admin/topup" method="POST" onsubmit="showLoader()" class="flex gap-2 mb-2"><input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm"><input name="amount" placeholder="Amt" type="number" class="w-1/3 border rounded p-1 text-sm"><button class="bg-green-600 text-white w-1/3 rounded text-xs font-bold">Topup</button></form>
+           </div>
+
+           <div class="bg-white p-4 rounded shadow border-l-4 border-blue-500">
+             <h3 class="font-bold text-blue-600 mb-2">Payment & Contact Info</h3>
              <form action="/admin/contact" method="POST" onsubmit="showLoader()" class="grid grid-cols-2 gap-2">
                 <input name="kpay_no" value="${contact.kpay_no}" placeholder="KPay No" class="border rounded p-1 text-sm"><input name="kpay_name" value="${contact.kpay_name}" placeholder="KPay Name" class="border rounded p-1 text-sm"><input name="kpay_img" value="${contact.kpay_img}" placeholder="KPay Img URL" class="col-span-2 border rounded p-1 text-sm">
                 <input name="wave_no" value="${contact.wave_no}" placeholder="Wave No" class="border rounded p-1 text-sm"><input name="wave_name" value="${contact.wave_name}" placeholder="Wave Name" class="border rounded p-1 text-sm"><input name="wave_img" value="${contact.wave_img}" placeholder="Wave Img URL" class="col-span-2 border rounded p-1 text-sm">
                 <input name="tele_link" value="${contact.tele_link}" placeholder="Telegram Link" class="col-span-2 border rounded p-1 text-sm">
-                <button class="col-span-2 bg-green-600 text-white rounded py-1 text-xs font-bold">UPDATE INFO</button>
+                <button class="col-span-2 bg-blue-600 text-white rounded py-1 text-xs font-bold">UPDATE INFO</button>
              </form>
            </div>
-           <div class="bg-white p-4 rounded shadow border-l-4 border-blue-500">
-             <h3 class="font-bold text-blue-600 mb-2">Lucky Tip</h3>
-             <form action="/admin/tip" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="tip" placeholder="Tip text" class="flex-1 border rounded p-1 text-sm" value="${dailyTip}"><button class="bg-blue-600 text-white px-3 rounded text-xs font-bold">UPDATE</button></form>
+
+           <div class="bg-white p-4 rounded shadow border-l-4 border-purple-500">
+             <h3 class="font-bold text-purple-600 mb-2">Lucky Tip</h3>
+             <form action="/admin/tip" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="tip" placeholder="Tip text" class="flex-1 border rounded p-1 text-sm" value="${dailyTip}"><button class="bg-purple-600 text-white px-3 rounded text-xs font-bold">UPDATE</button></form>
            </div>
+           
            <div class="bg-white p-4 rounded shadow border-l-4 border-yellow-500">
              <h3 class="font-bold text-yellow-600 mb-2">Reset Password</h3>
              <form action="/admin/reset_pass" method="POST" onsubmit="showLoader()" class="flex gap-2"><input name="username" placeholder="User" class="w-1/3 border rounded p-1 text-sm" required><input name="password" placeholder="New Pass" class="w-1/3 border rounded p-1 text-sm" required><button class="bg-yellow-600 text-white w-1/3 rounded text-xs font-bold">RESET</button></form>
            </div>
+           
            <div class="bg-white p-4 rounded shadow border-l-4 border-gray-600">
              <h3 class="font-bold text-gray-600 mb-2">Blocks</h3>
              <form action="/admin/block" method="POST" onsubmit="showLoader()"><input type="hidden" name="action" value="add"><div class="flex gap-2 mb-2"><input name="block_val" type="number" placeholder="Num" class="w-1/2 border rounded p-2 text-center font-bold"><select name="block_type" class="w-1/2 border rounded p-2 text-xs font-bold"><option value="direct">Direct</option><option value="head">Head</option><option value="tail">Tail</option></select></div><div class="flex gap-2"><button class="bg-gray-800 text-white flex-1 py-2 rounded text-xs font-bold">BLOCK</button><button type="submit" formaction="/admin/block" name="action" value="clear" class="bg-red-500 text-white w-1/3 py-2 rounded text-xs font-bold">CLEAR</button></div></form>
@@ -510,6 +511,9 @@ serve(async (req) => {
       <script>
         const p = new URLSearchParams(window.location.search);
         if(p.get('status')==='market_closed') Swal.fire({icon:'warning',title:'Market Closed',text:'Betting is currently closed.',confirmButtonColor:'#d97736'});
+        if(p.get('status')==='error_min') Swal.fire({icon:'error',title:'Invalid Amount',text:'Minimum bet is 50 Ks',confirmButtonColor:'#d33'});
+        if(p.get('status')==='error_max') Swal.fire({icon:'error',title:'Invalid Amount',text:'Maximum bet is 100,000 Ks',confirmButtonColor:'#d33'});
+
         function filterHistory() { const i = document.getElementById('historySearch'); const f = i.value.trim(); const l = document.getElementById('historyList'); const it = l.getElementsByClassName('history-item'); for(let x=0;x<it.length;x++){ const s = it[x].querySelector('.bet-number'); const t = s.textContent||s.innerText; if(t.indexOf(f)>-1) it[x].style.display=""; else it[x].style.display="none"; } }
         function confirmClearHistory() { Swal.fire({title:'Clear History?',text:"Only finished bets removed.",icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'Yes'}).then((r)=>{if(r.isConfirmed){showLoader();fetch('/clear_history',{method:'POST'}).then(res=>res.json()).then(d=>{hideLoader();Swal.fire('Cleared!',d.count+' records removed.','success').then(()=>window.location.reload());});}}) }
         let currentQuickMode = '';
@@ -523,12 +527,10 @@ serve(async (req) => {
         function generateTail(d) { let r=[]; for(let i=0;i<10;i++) r.push(i+d); return r; }
         function generateDouble() { let r=[]; for(let i=0;i<10;i++) r.push(i+\"\"+i); return r; }
         function generateBrake(n) { if(n.length!==2)return[]; const r=n[1]+n[0]; return n===r?[n]:[n,r]; }
-        async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
+        async function placeBet(e) { e.preventDefault(); showLoader(); const fd = new FormData(e.target); try { const res = await fetch('/bet', { method: 'POST', body: fd }); const data = await res.json(); hideLoader(); if (data.status === 'success') { closeBetModal(); showVoucher(data.voucher); } else if (data.status === 'blocked') Swal.fire('Blocked', 'Number '+data.num+' is closed.', 'error'); else if (data.status === 'insufficient_balance') Swal.fire('Error', 'Insufficient Balance', 'error'); else if (data.status === 'market_closed') Swal.fire('Closed', 'Market is currently closed.', 'warning'); else if (data.status === 'error_min') Swal.fire('Error', 'Minimum bet is 50 Ks', 'error'); else if (data.status === 'error_max') Swal.fire('Error', 'Maximum bet is 100,000 Ks', 'error'); else Swal.fire('Error', 'Invalid Bet', 'error'); } catch (err) { hideLoader(); Swal.fire('Error', 'Connection Failed', 'error'); } }
         function showVoucher(v) { const html = \`<div class="voucher-container"><div class="stamp">PAID</div><div class="voucher-header"><h2 class="text-xl font-bold">Myanmar 2D Voucher</h2><div class="text-xs text-gray-500">ID: \${v.id}</div><div class="text-sm mt-1">User: <b>\${v.user}</b></div><div class="text-xs text-gray-400">\${v.date} \${v.time}</div></div><div class="voucher-body">\${v.numbers.map(n => \`<div class="voucher-row"><span>\${n}</span><span>\${v.amountPerNum}</span></div>\`).join('')}</div><div class="voucher-total"><span>TOTAL</span><span>\${v.total} Ks</span></div></div>\`; document.getElementById('voucherContent').innerHTML = html; document.getElementById('voucherModal').classList.remove('hidden'); }
         const API_URL = "https://api.thaistock2d.com/live";
         async function updateData() { try { const res = await fetch(API_URL); const data = await res.json(); if(data.live) { document.getElementById('live_twod').innerText = data.live.twod || "--"; document.getElementById('live_date').innerText = data.live.date || "Today"; document.getElementById('live_time').innerText = data.live.time || "--:--:--"; } if (data.result) { if(data.result[1]) { document.getElementById('set_12').innerText = data.result[1].set||"--"; document.getElementById('val_12').innerText = data.result[1].value||"--"; document.getElementById('res_12').innerText = data.result[1].twod||"--"; } const ev = data.result[3] || data.result[2]; if(ev) { document.getElementById('set_430').innerText = ev.set||"--"; document.getElementById('val_430').innerText = ev.value||"--"; document.getElementById('res_430').innerText = ev.twod||"--"; } } } catch (e) {} } setInterval(updateData, 2000); updateData();
-        
-        // LOGOUT LOGIC
         function doLogout() { sessionStorage.removeItem('splash_shown'); showLoader(); }
       </script>
     </body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
