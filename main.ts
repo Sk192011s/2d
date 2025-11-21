@@ -54,27 +54,22 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. BETTING LOGIC (With Time Lock)
+  // 2. BETTING LOGIC
   // =========================
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
-    // --- TIME CHECK LOGIC ---
+    // Time Lock Logic
     const now = new Date();
     const mmTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const hour = mmTime.getHours();
     const minute = mmTime.getMinutes();
     const totalMins = hour * 60 + minute;
 
-    // 11:50 AM = 710 mins, 12:15 PM = 735 mins (Morning Break)
-    const isMorningClose = totalMins >= 710 && totalMins < 735;
-    
-    // 3:50 PM = 950 mins, 8:00 AM = 480 mins (Evening Close)
-    // Close if time is >= 15:50 OR time < 08:00
-    const isEveningClose = totalMins >= 950 || totalMins < 480;
+    const isMorningClose = totalMins >= 710 && totalMins < 735; // 11:50 - 12:15
+    const isEveningClose = totalMins >= 950 || totalMins < 480; // 3:50 - 08:00
 
     if (isMorningClose || isEveningClose) {
         return Response.redirect(url.origin + "/?status=market_closed");
     }
-    // -------------------------
 
     const form = await req.formData();
     const numbersRaw = form.get("number")?.toString() || ""; 
@@ -95,7 +90,6 @@ serve(async (req) => {
 
     await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
     
-    // Record Time String
     const timeString = mmTime.toLocaleString("en-US", { hour: 'numeric', minute: 'numeric', hour12: true });
 
     for (const num of numberList) {
@@ -281,11 +275,12 @@ serve(async (req) => {
       ${loaderHTML}
 
       <nav class="bg-theme h-14 flex justify-between items-center px-4 text-white shadow-md sticky top-0 z-50">
-        <div class="font-bold text-lg">Myanmar 2D</div>
+        <div class="font-bold text-lg uppercase tracking-wider"><i class="fas fa-user-circle mr-2"></i>${currentUser}</div>
+        
         <div class="flex gap-4 items-center">
-           <div class="flex items-center gap-1 bg-white/10 px-2 py-1 rounded">
+           <div class="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full border border-white/20">
              <i class="fas fa-wallet text-xs text-yellow-400"></i>
-             <span class="text-sm font-bold">${balance}</span>
+             <span class="text-sm font-bold">${balance.toLocaleString()} Ks</span>
            </div>
            <a href="/logout" onclick="showLoader()" class="text-xs border border-white/30 px-2 py-1 rounded hover:bg-white/10">Logout</a>
         </div>
@@ -363,7 +358,7 @@ serve(async (req) => {
                 <span class="text-xs text-gray-400">${b.time}</span>
               </div>
               <div class="text-right">
-                <div class="font-bold text-gray-700">${b.amount}</div>
+                <div class="font-bold text-gray-700">${b.amount.toLocaleString()}</div>
                 <div class="text-[10px] font-bold uppercase ${b.status === 'WIN' ? 'text-green-600' : b.status === 'LOSE' ? 'text-red-600' : 'text-yellow-600'}">${b.status}</div>
               </div>
             </div>
