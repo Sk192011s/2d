@@ -9,7 +9,7 @@ serve(async (req) => {
   // 1. AUTHENTICATION (Register/Login)
   // =========================
   
-  // Register
+  // Register Logic
   if (req.method === "POST" && url.pathname === "/register") {
     const form = await req.formData();
     const username = form.get("username")?.toString();
@@ -31,7 +31,7 @@ serve(async (req) => {
     return new Response(null, { status: 303, headers });
   }
 
-  // Login
+  // Login Logic
   if (req.method === "POST" && url.pathname === "/login") {
     const form = await req.formData();
     const username = form.get("username")?.toString();
@@ -49,7 +49,7 @@ serve(async (req) => {
     return new Response(null, { status: 303, headers });
   }
 
-  // Logout
+  // Logout Logic
   if (url.pathname === "/logout") {
     const headers = new Headers({ "Location": "/" });
     headers.set("Set-Cookie", `user=; Path=/; Max-Age=0`);
@@ -124,7 +124,7 @@ serve(async (req) => {
   // 3. UI RENDERING
   // =========================
   
-  // --- LOGIN / REGISTER PAGE ---
+  // --- LOGIN / REGISTER PAGE UI ---
   if (!currentUser) {
     return new Response(`
       <!DOCTYPE html>
@@ -183,7 +183,7 @@ serve(async (req) => {
     `, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
-  // --- DASHBOARD (LOGGED IN) ---
+  // --- MAIN DASHBOARD UI (LOGGED IN) ---
 
   const userEntry = await kv.get(["users", currentUser]);
   const balance = (userEntry.value as any)?.balance || 0;
@@ -365,5 +365,9 @@ serve(async (req) => {
       </script>
     </body>
     </html>
-  `, { headers: { "content-type": "text/html; charset=utf-8" } });
+  `;
+
+  return new Response(html, {
+    headers: { "content-type": "text/html; charset=utf-8" }
+  });
 });
