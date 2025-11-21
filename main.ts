@@ -54,7 +54,7 @@ serve(async (req) => {
   const isAdmin = currentUser === "admin";
 
   // =========================
-  // 2. BETTING LOGIC (Myanmar Time Fixed)
+  // 2. BETTING LOGIC
   // =========================
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
     const form = await req.formData();
@@ -76,7 +76,7 @@ serve(async (req) => {
 
     await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
     
-    // Myanmar TimeZone String
+    // Myanmar TimeZone
     const mmTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: true });
 
     for (const num of numberList) {
@@ -111,7 +111,6 @@ serve(async (req) => {
     if (url.pathname === "/admin/payout") {
       const form = await req.formData();
       const winNumber = form.get("win_number")?.toString();
-      // Payout logic iterates all pending bets (cannot limit here, must check all)
       const iter = kv.list({ prefix: ["bets"] });
       for await (const entry of iter) {
         const bet = entry.value as any;
@@ -135,7 +134,6 @@ serve(async (req) => {
   // 3. UI RENDERING
   // =========================
   
-  // Shared HTML Head with Loader CSS
   const commonHead = `
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -151,7 +149,7 @@ serve(async (req) => {
         .tab-active { background-color: #4a3b32; color: white; }
         .tab-inactive { background-color: #eee; color: #666; }
         
-        /* APP LOADER STYLES */
+        /* APP LOADER */
         #app-loader {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.85); z-index: 9999;
@@ -165,9 +163,13 @@ serve(async (req) => {
         }
         @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         .hidden-loader { opacity: 0; pointer-events: none; }
+
+        /* CUSTOM SCROLLBAR FOR HISTORY */
+        .history-scroll::-webkit-scrollbar { width: 4px; }
+        .history-scroll::-webkit-scrollbar-track { background: #f1f1f1; }
+        .history-scroll::-webkit-scrollbar-thumb { background: #888; border-radius: 2px; }
     </style>
     <script>
-        // Loader Logic
         window.addEventListener('load', () => {
             const loader = document.getElementById('app-loader');
             if(loader) loader.classList.add('hidden-loader');
@@ -179,11 +181,7 @@ serve(async (req) => {
     </script>
   `;
 
-  const loaderHTML = `
-    <div id="app-loader">
-        <div class="spinner"></div>
-    </div>
-  `;
+  const loaderHTML = `<div id="app-loader"><div class="spinner"></div></div>`;
 
   // LOGIN PAGE
   if (!currentUser) {
@@ -245,11 +243,11 @@ serve(async (req) => {
     `, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
 
-  // --- DASHBOARD ---
+  // DASHBOARD
   const userEntry = await kv.get(["users", currentUser]);
   const balance = (userEntry.value as any)?.balance || 0;
 
-  // PERFORMANCE FIX: Limit to last 50 bets using 'reverse' and 'limit'
+  // Limit History to 50
   const bets = [];
   const iter = kv.list({ prefix: ["bets"] }, { reverse: true, limit: 50 });
   for await (const entry of iter) {
@@ -264,7 +262,7 @@ serve(async (req) => {
       <title>Myanmar Live 2D/3D</title>
       ${commonHead}
     </head>
-    <body class="max-w-md mx-auto min-h-screen bg-gray-100 pb-20 text-gray-800">
+    <body class="max-w-md mx-auto min-h-screen bg-gray-100 pb-10 text-gray-800">
       ${loaderHTML}
 
       <nav class="bg-theme h-14 flex justify-between items-center px-4 text-white shadow-md sticky top-0 z-50">
@@ -342,9 +340,9 @@ serve(async (req) => {
 
       <div class="px-4">
         <h3 class="font-bold text-gray-500 text-sm mb-3 uppercase tracking-wider">Betting History (Last 50)</h3>
-        <div class="space-y-2 pb-10">
+        <div class="space-y-2 h-80 overflow-y-auto history-scroll rounded-lg border border-gray-200 bg-white p-2 shadow-inner">
           ${bets.map(b => `
-            <div class="bg-white p-3 rounded-lg border-l-4 ${b.status === 'WIN' ? 'border-green-500' : b.status === 'LOSE' ? 'border-red-500' : 'border-yellow-500'} shadow-sm flex justify-between items-center">
+            <div class="bg-gray-50 p-3 rounded border-l-4 ${b.status === 'WIN' ? 'border-green-500' : b.status === 'LOSE' ? 'border-red-500' : 'border-yellow-500'} border-b shadow-sm flex justify-between items-center">
               <div class="truncate w-2/3">
                 <span class="text-lg font-bold text-gray-800 block truncate">${b.number}</span>
                 <span class="text-xs text-gray-400">${b.time}</span>
@@ -355,11 +353,12 @@ serve(async (req) => {
               </div>
             </div>
           `).join('')}
+          ${bets.length === 0 ? '<div class="text-center text-gray-400 text-sm py-10">No betting history</div>' : ''}
         </div>
       </div>
 
       <div id="betModal" class="fixed inset-0 bg-black/90 hidden z-50 flex items-end justify-center sm:items-center">
-         <div class="bg-white w-full max-w-md rounded-t-2xl sm:rounded-xl p-4 h-[80vh] sm:h-auto flex flex-col">
+         <div class="bg-white w-full max-w-md rounded-t-2xl sm:rounded-xl p-4 h-auto flex flex-col">
            <div class="flex justify-between items-center mb-4">
              <h2 class="text-xl font-bold text-theme">Betting</h2>
              <button onclick="closeBetModal()" class="text-gray-500 text-2xl">&times;</button>
@@ -373,7 +372,7 @@ serve(async (req) => {
            <form action="/bet" method="POST" onsubmit="showLoader()" class="flex-1 flex flex-col">
              <div id="tabDirectContent">
                 <label class="text-xs text-gray-500 font-bold">Numbers (comma separated)</label>
-                <textarea id="numberInput" name="number" class="w-full h-24 border-2 border-gray-300 rounded-lg p-2 text-lg font-bold text-gray-700 focus:border-[#4a3b32] focus:outline-none" placeholder="Ex: 12, 34, 56"></textarea>
+                <textarea id="numberInput" name="number" class="w-full h-20 border-2 border-gray-300 rounded-lg p-2 text-lg font-bold text-gray-700 focus:border-[#4a3b32] focus:outline-none" placeholder="Ex: 12, 34, 56"></textarea>
              </div>
 
              <div id="tabQuickContent" class="hidden space-y-2">
@@ -392,7 +391,7 @@ serve(async (req) => {
                 </div>
              </div>
 
-             <div class="mt-auto pt-4">
+             <div class="mt-4">
                <label class="text-xs text-gray-500 font-bold">Amount (Per Number)</label>
                <input type="number" name="amount" class="w-full border-2 border-gray-300 rounded-lg p-2 text-xl font-bold text-center mb-4" required>
                <button class="w-full bg-theme text-white py-3 rounded-lg font-bold text-lg">Confirm Bet</button>
@@ -489,7 +488,6 @@ serve(async (req) => {
                 document.getElementById('live_date').innerText = data.live.date || "Today";
                 document.getElementById('live_time').innerText = data.live.time || "--:--:--";
             }
-            // Result Update Logic
             if (data.result) {
                 if(data.result[1]) {
                     document.getElementById('set_12').innerText = data.result[1].set || "--";
