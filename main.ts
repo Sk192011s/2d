@@ -59,13 +59,15 @@ serve(async (req) => {
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
     // Time Lock Logic
     const now = new Date();
-    const mmTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
-    const hour = mmTime.getHours();
-    const minute = mmTime.getMinutes();
-    const totalMins = hour * 60 + minute;
+    // We use a helper to get Yangon Time parts
+    const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
+    // Parse hour/min from string like "11/21/2025, 21:30:00"
+    const timePart = mmString.split(", ")[1];
+    const [h, m] = timePart.split(":").map(Number);
+    const totalMins = h * 60 + m;
 
     const isMorningClose = totalMins >= 710 && totalMins < 735; // 11:50 - 12:15
-    const isEveningClose = totalMins >= 950 || totalMins < 480; // 3:50 - 08:00
+    const isEveningClose = totalMins >= 950 || totalMins < 480; // 15:50 - 08:00
 
     if (isMorningClose || isEveningClose) {
         return Response.redirect(url.origin + "/?status=market_closed");
@@ -90,8 +92,13 @@ serve(async (req) => {
 
     await kv.set(["users", currentUser], { ...userData, balance: currentBalance - totalCost });
     
-    const timeString = mmTime.toLocaleString("en-US", { hour: 'numeric', minute: 'numeric', hour12: true });
-
+    // Visual Time (12 hr format)
+    const visualTime = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", hour: 'numeric', minute: 'numeric', hour12: true });
+    
+    // Raw Timestamp for Logic (Using current server time is fine if deployed close, 
+    // but strictly speaking we should rely on the hour check during payout. 
+    // Storing the totalMins (Yangon based) is safest for comparison.)
+    
     for (const num of numberList) {
         const betId = Date.now().toString() + Math.random().toString().substr(2, 5);
         await kv.set(["bets", betId], { 
@@ -99,7 +106,8 @@ serve(async (req) => {
             number: num.trim(), 
             amount, 
             status: "PENDING", 
-            time: timeString 
+            time: visualTime,
+            rawMins: totalMins // Store minutes from midnight (Yangon time) for payout logic
         });
     }
 
@@ -121,21 +129,38 @@ serve(async (req) => {
       }
       return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
+
+    // SAFE PAYOUT LOGIC
     if (url.pathname === "/admin/payout") {
       const form = await req.formData();
       const winNumber = form.get("win_number")?.toString();
+      const session = form.get("session")?.toString(); // "MORNING" or "EVENING"
+
       const iter = kv.list({ prefix: ["bets"] });
       for await (const entry of iter) {
         const bet = entry.value as any;
+        
         if (bet.status === "PENDING") {
-          if (bet.number === winNumber) {
-            const winAmount = bet.amount * 80;
-            const userEntry = await kv.get(["users", bet.user]);
-            const userData = userEntry.value as any;
-            await kv.set(["users", bet.user], { ...userData, balance: (userData.balance || 0) + winAmount });
-            await kv.set(["bets", entry.key[1]], { ...bet, status: "WIN", winAmount });
-          } else {
-            await kv.set(["bets", entry.key[1]], { ...bet, status: "LOSE" });
+          // Filter by Session Time
+          // Morning Bets: rawMins < 735 (12:15 PM)
+          // Evening Bets: rawMins >= 735 (12:15 PM)
+          const betMins = bet.rawMins || 0; // Fallback for old data
+          const isMorningBet = betMins < 735;
+          
+          let processBet = false;
+          if (session === "MORNING" && isMorningBet) processBet = true;
+          if (session === "EVENING" && !isMorningBet) processBet = true;
+
+          if (processBet) {
+             if (bet.number === winNumber) {
+                const winAmount = bet.amount * 80;
+                const userEntry = await kv.get(["users", bet.user]);
+                const userData = userEntry.value as any;
+                await kv.set(["users", bet.user], { ...userData, balance: (userData.balance || 0) + winAmount });
+                await kv.set(["bets", entry.key[1]], { ...bet, status: "WIN", winAmount });
+             } else {
+                await kv.set(["bets", entry.key[1]], { ...bet, status: "LOSE" });
+             }
           }
         }
       }
@@ -276,7 +301,6 @@ serve(async (req) => {
 
       <nav class="bg-theme h-14 flex justify-between items-center px-4 text-white shadow-md sticky top-0 z-50">
         <div class="font-bold text-lg uppercase tracking-wider"><i class="fas fa-user-circle mr-2"></i>${currentUser}</div>
-        
         <div class="flex gap-4 items-center">
            <div class="flex items-center gap-1 bg-white/10 px-3 py-1 rounded-full border border-white/20">
              <i class="fas fa-wallet text-xs text-yellow-400"></i>
@@ -317,9 +341,19 @@ serve(async (req) => {
                <input name="amount" placeholder="Amt" type="number" class="w-1/3 border rounded p-1">
                <button class="bg-green-600 text-white w-1/3 rounded text-xs">Topup</button>
              </form>
-             <form action="/admin/payout" method="POST" onsubmit="showLoader()" class="flex gap-2">
-                <input name="win_number" placeholder="Win No" class="w-2/3 border rounded p-1">
-                <button class="bg-red-600 text-white w-1/3 rounded text-xs">Payout</button>
+             
+             <div class="border-t my-2"></div>
+             
+             <form action="/admin/payout" method="POST" onsubmit="showLoader()" class="flex flex-col gap-2">
+                <label class="text-xs font-bold text-gray-500">Payout Session:</label>
+                <div class="flex gap-2">
+                   <select name="session" class="w-1/3 border rounded p-1 bg-gray-50 text-xs font-bold">
+                      <option value="MORNING">Morning (12:01)</option>
+                      <option value="EVENING">Evening (4:30)</option>
+                   </select>
+                   <input name="win_number" placeholder="Win No" class="w-1/3 border rounded p-1 text-center font-bold">
+                   <button class="bg-red-600 text-white w-1/3 rounded text-xs">PAYOUT</button>
+                </div>
              </form>
            </div>
         </div>
