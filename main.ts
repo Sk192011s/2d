@@ -57,7 +57,6 @@ serve(async (req) => {
   // 2. BETTING LOGIC
   // =========================
   if (req.method === "POST" && url.pathname === "/bet" && currentUser) {
-    // Time Lock
     const now = new Date();
     const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
     const timePart = mmString.split(", ")[1];
@@ -79,7 +78,7 @@ serve(async (req) => {
 
     const numberList = numbersRaw.split(",").filter(n => n.trim() !== "");
     
-    // CHECK BLOCKED NUMBERS
+    // CHECK BLOCKS
     for (const num of numberList) {
         const isBlocked = await kv.get(["blocks", num.trim()]);
         if (isBlocked.value) {
@@ -119,7 +118,6 @@ serve(async (req) => {
   // 3. ADMIN LOGIC
   // =========================
   if (isAdmin && req.method === "POST") {
-    // Topup
     if (url.pathname === "/admin/topup") {
       const form = await req.formData();
       const targetUser = form.get("username")?.toString();
@@ -133,8 +131,6 @@ serve(async (req) => {
       }
       return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
-
-    // Payout
     if (url.pathname === "/admin/payout") {
       const form = await req.formData();
       const winNumber = form.get("win_number")?.toString();
@@ -146,7 +142,6 @@ serve(async (req) => {
         if (bet.status === "PENDING") {
           const betMins = bet.rawMins || 0;
           const isMorningBet = betMins < 735;
-          
           let processBet = false;
           if (session === "MORNING" && isMorningBet) processBet = true;
           if (session === "EVENING" && !isMorningBet) processBet = true;
@@ -167,28 +162,25 @@ serve(async (req) => {
       return new Response(null, { status: 303, headers: { "Location": "/" } });
     }
 
-    // BLOCK MANAGEMENT
+    // UPDATED BLOCK LOGIC
     if (url.pathname === "/admin/block") {
         const form = await req.formData();
+        const action = form.get("action")?.toString(); // 'add', 'clear', 'unblock'
         const val = form.get("block_val")?.toString() || "";
         const type = form.get("block_type")?.toString() || "direct";
 
-        if (type === "clear") {
-            // Clear all blocks
+        if (action === "clear") {
             const iter = kv.list({ prefix: ["blocks"] });
-            for await (const entry of iter) {
-                await kv.delete(entry.key);
-            }
-        } else if (val) {
+            for await (const entry of iter) await kv.delete(entry.key);
+        } 
+        else if (action === "unblock" && val) {
+            await kv.delete(["blocks", val]);
+        }
+        else if (action === "add" && val) {
             let numsToBlock = [];
-            
-            if (type === "direct") {
-                numsToBlock.push(val.padStart(2, '0'));
-            } else if (type === "head") {
-                for(let i=0; i<10; i++) numsToBlock.push(val + i);
-            } else if (type === "tail") {
-                for(let i=0; i<10; i++) numsToBlock.push(i + val);
-            }
+            if (type === "direct") numsToBlock.push(val.padStart(2, '0'));
+            else if (type === "head") for(let i=0; i<10; i++) numsToBlock.push(val + i);
+            else if (type === "tail") for(let i=0; i<10; i++) numsToBlock.push(i + val);
 
             for (const n of numsToBlock) {
                 if(n.length === 2) await kv.set(["blocks", n], true);
@@ -201,7 +193,6 @@ serve(async (req) => {
   // =========================
   // 4. UI RENDERING
   // =========================
-  
   const commonHead = `
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -275,10 +266,13 @@ serve(async (req) => {
     if (isAdmin || b.user === currentUser) bets.push(b);
   }
 
-  // Count Blocked Numbers for Display
-  let blockedCount = 0;
+  // FETCH BLOCKED NUMBERS LIST
+  const blockedNumbers = [];
   const blockIter = kv.list({ prefix: ["blocks"] });
-  for await (const _ of blockIter) blockedCount++;
+  for await (const entry of blockIter) {
+      blockedNumbers.push(entry.key[1]);
+  }
+  blockedNumbers.sort();
 
   return new Response(`
     <!DOCTYPE html>
@@ -337,11 +331,10 @@ serve(async (req) => {
            </div>
 
            <div class="bg-white p-4 rounded shadow border-l-4 border-gray-600">
-             <div class="flex justify-between items-center mb-2">
-                <h3 class="font-bold text-gray-600">Manage Blocks</h3>
-                <span class="text-xs bg-red-100 text-red-600 px-2 py-1 rounded font-bold">${blockedCount} blocked</span>
-             </div>
+             <h3 class="font-bold text-gray-600 mb-2">Manage Blocks</h3>
+             
              <form action="/admin/block" method="POST" onsubmit="showLoader()">
+                <input type="hidden" name="action" value="add">
                 <div class="flex gap-2 mb-2">
                    <input name="block_val" type="number" placeholder="Num (e.g. 5)" class="w-1/2 border rounded p-2 text-center font-bold">
                    <select name="block_type" class="w-1/2 border rounded p-2 text-xs font-bold">
@@ -351,10 +344,26 @@ serve(async (req) => {
                    </select>
                 </div>
                 <div class="flex gap-2">
-                    <button class="bg-gray-800 text-white flex-1 py-2 rounded text-xs font-bold">BLOCK</button>
-                    <button name="block_type" value="clear" class="bg-red-500 text-white w-1/3 py-2 rounded text-xs font-bold">CLEAR ALL</button>
+                    <button class="bg-gray-800 text-white flex-1 py-2 rounded text-xs font-bold">BLOCK NUMBER</button>
+                    <button type="submit" formaction="/admin/block" name="action" value="clear" class="bg-red-500 text-white w-1/3 py-2 rounded text-xs font-bold">CLEAR ALL</button>
                 </div>
              </form>
+
+             <div class="mt-4 border-t pt-2">
+                 <label class="text-xs font-bold text-gray-400 mb-2 block">Currently Blocked:</label>
+                 <div class="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
+                    ${blockedNumbers.length === 0 ? '<span class="text-xs text-gray-400">No blocked numbers</span>' : ''}
+                    ${blockedNumbers.map(n => `
+                        <form action="/admin/block" method="POST" style="display:inline;">
+                            <input type="hidden" name="action" value="unblock">
+                            <input type="hidden" name="block_val" value="${n}">
+                            <button class="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold border border-red-200 hover:bg-red-200 flex items-center gap-1">
+                                ${n} <i class="fas fa-times-circle"></i>
+                            </button>
+                        </form>
+                    `).join('')}
+                 </div>
+             </div>
            </div>
         </div>` : ''}
 
