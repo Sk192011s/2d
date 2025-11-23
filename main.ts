@@ -5,7 +5,7 @@ const kv = await Deno.openKv();
 
 // --- CONFIGURATION ---
 const API_KEY = "AIzaSyDRIIEdpfFnE5Qoj4npwidQyT596U8hXpw"; 
-const AI_MODELS = ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.0-pro"];
+const AI_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash", "gemini-2.0-flash"];
 
 const SYSTEM_INSTRUCTION = `
 You are "Soe Kyaw Win AI", a smart and friendly assistant.
