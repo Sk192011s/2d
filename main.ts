@@ -3,22 +3,6 @@ import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
 
 const kv = await Deno.openKv();
 
-// --- CONFIGURATION ---
-const API_KEY = "AIzaSyDRIIEdpfFnE5Qoj4npwidQyT596U8hXpw"; 
-const AI_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash", "gemini-2.0-flash"];
-
-const SYSTEM_INSTRUCTION = `
-You are "Soe Kyaw Win AI", a smart and friendly assistant.
-**ROLES:**
-1. **2D Expert:** Use [MARKET DATA] & [HISTORY].
-   - Formula 1 (5/10 Diff): "FORMULA_1".
-   - Formula 2 (Set/Value): "FORMULA_2".
-   - Missing Numbers: Analyze [PAST HISTORY].
-   - Doubles: Check [DAY_INFO].
-2. **General Assistant:** Answer Football, Health, Knowledge freely.
-**LANGUAGE:** Myanmar (Burmese).
-`;
-
 // --- HELPER FUNCTIONS ---
 async function hashPassword(p: string, s: string) {
   const data = new TextEncoder().encode(p + s);
@@ -27,81 +11,7 @@ async function hashPassword(p: string, s: string) {
 }
 function generateId() { return crypto.randomUUID(); }
 
-function calculateFormula5_10(twod: string) {
-    try {
-        const digits = twod.split('').map(Number);
-        let results = [];
-        let originalSums = [];
-        for (let n of digits) {
-            let diff5 = (5 - (n % 5));
-            let diff10 = (10 - (n % 10));
-            if(diff10===10) diff10=0;
-            let to5 = (diff5 + 1) % 10;
-            let to10 = (diff10 + 1) % 10;
-            originalSums.push(diff5); originalSums.push(diff10);
-            results.push(to5); results.push(to10);
-        }
-        let finalSet = new Set(results);
-        if (finalSet.size < 3) { for (let n of originalSums) { finalSet.add(n); if (finalSet.size >= 3) break; } }
-        return Array.from(finalSet).join(", ");
-    } catch (e) { return null; }
-}
-
-function calculateFormulaSetVal(setStr: string, valStr: string) {
-    try {
-        const s = setStr.replace(/,/g, ""); const v = valStr.replace(/,/g, ""); 
-        const sDigits = s.split('.')[0].slice(-3).split('').map(Number); 
-        const vDigits = v.split('.')[0].slice(-3).split('').map(Number);
-        let incremented = []; let originalSums = [];
-        for (let i = 0; i < sDigits.length; i++) {
-            let sum = (sDigits[i] + (vDigits[i] || 0)) % 10;
-            let inc = (sum + 1) % 10;
-            originalSums.push(sum); incremented.push(inc);
-        }
-        let finalSet = new Set(incremented);
-        if (finalSet.size < 3) { for (let num of originalSums) { finalSet.add(num); if (finalSet.size >= 3) break; } }
-        return Array.from(finalSet).join(", ");
-    } catch (e) { return null; }
-}
-
-async function getAIContext() {
-    let context = "";
-    try {
-        const res = await fetch("https://api.thaistock2d.com/live");
-        const data = await res.json();
-        const now = new Date().toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: true, dateStyle: 'full', timeStyle: 'short' });
-        
-        context += `[CURRENT TIME]: ${now}\n`;
-        const dayName = now.split(',')[0];
-        if(dayName === 'Monday' || dayName === 'Friday') context += `[DAY_INFO]: Today is ${dayName}. Warn user about Doubles (အပူး)!\n`;
-
-        let mNum = null, eNum = null;
-        if (data.result && data.result[1]) mNum = data.result[1].twod;
-        if (data.result && (data.result[3] || data.result[2])) eNum = (data.result[3] || data.result[2]).twod;
-
-        if (eNum) {
-            context += `STATUS: Evening Result (${eNum}) is OUT.\n`;
-            context += `FORMULA_1 (FOR TOMORROW): [${calculateFormula5_10(eNum)}]\n`;
-        } else if (mNum) {
-            context += `STATUS: Morning Result (${mNum}) is OUT.\n`;
-            context += `FORMULA_1 (FOR EVENING): [${calculateFormula5_10(mNum)}]\n`;
-            if (data.result[1].set && data.result[1].value) {
-                context += `FORMULA_2 (Set/Val - FOR EVENING): [${calculateFormulaSetVal(data.result[1].set, data.result[1].value)}]\n`;
-            }
-        } else {
-            context += `STATUS: Market Not Open Yet.\n`;
-        }
-
-        context += `\n[PAST HISTORY]:\n`;
-        const iter = kv.list({ prefix: ["history"] }, { limit: 10, reverse: true });
-        for await (const entry of iter) {
-            const val = entry.value as any;
-            context += `${val.date}: ${val.morning}, ${val.evening}\n`;
-        }
-    } catch (e) { context += "Data Unavailable.\n"; }
-    return context;
-}
-
+// --- CRON JOB (HISTORY FIX APPLIED HERE) ---
 Deno.cron("Save History", "*/5 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
@@ -109,18 +19,42 @@ Deno.cron("Save History", "*/5 * * * *", async () => {
     const now = new Date();
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
+    
+    // Weekend check
     if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
 
     let m = "--", e = "--";
+    const curHour = mmDate.getHours(); // Get current hour in Myanmar Time
+
     if (data.result) {
+        // Morning Result
         if (data.result[1] && data.result[1].twod) m = data.result[1].twod;
-        const ev = data.result[3] || data.result[2];
-        if (ev && ev.twod) e = ev.twod;
+        
+        // Evening Result Logic Fix
+        // ညနေပိုင်း (မွန်းလွဲ ၂ နာရီကျော်မှသာ ညနေ result ကို စစ်မယ်)
+        if (curHour >= 14) {
+            const ev = data.result[3] || data.result[2];
+            if (ev && ev.twod) e = ev.twod;
+        }
     }
+
+    // "00" Fix: ညနေ ၄ နာရီ မထိုးခင် "00" ပေါ်နေရင် "--" လို့ပဲ သတ်မှတ်မယ်
+    if (e === "00" && curHour < 16) {
+        e = "--";
+    }
+
     if (m !== "--" || e !== "--") {
         const ex = await kv.get(["history", dateKey]);
         const old = ex.value as any || { morning: "--", evening: "--" };
-        await kv.set(["history", dateKey], { morning: m!=="--"?m:old.morning, evening: e!=="--"?e:old.evening, date: dateKey });
+        // ညနေခင်း result မထွက်သေးရင် အဟောင်းအတိုင်းပဲထားမယ် (00 ပြဿနာရှင်းရန်)
+        const newMorning = m !== "--" ? m : old.morning;
+        const newEvening = e !== "--" ? e : old.evening;
+        
+        await kv.set(["history", dateKey], { 
+            morning: newMorning, 
+            evening: newEvening, 
+            date: dateKey 
+        });
     }
   } catch (e) {}
 });
@@ -258,27 +192,8 @@ serve(async (req) => {
 
   // --- AUTHENTICATED ACTIONS (POST) ---
   if (req.method === "POST") {
-    if (url.pathname === "/chat") {
-        try {
-            const { message } = await req.json();
-            const aiContext = await getAIContext();
-            const fullPrompt = `${SYSTEM_INSTRUCTION}\n${aiContext}\n[USER MESSAGE]\n${message}`;
-            let reply = "အင်တာနက်လိုင်း အခက်အခဲရှိနေပါသည် ခင်ဗျာ။";
-            let success = false;
-            for (const model of AI_MODELS) {
-                if(success) break;
-                try {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${API_KEY}`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: fullPrompt }] }] })
-                    });
-                    const data = await res.json();
-                    if (!data.error && data.candidates) { reply = data.candidates[0].content.parts[0].text; success = true; }
-                } catch (e) {}
-            }
-            return new Response(JSON.stringify({ reply }), { headers: { "Content-Type": "application/json" } });
-        } catch (e) { return new Response(JSON.stringify({ reply: "Connection Error" }), { headers: { "Content-Type": "application/json" } }); }
-    }
+    // AI CHAT REMOVED HERE
+
     if (url.pathname === "/update_avatar") {
         const form = await req.formData(); const img = form.get("avatar")?.toString();
         const uData = (await kv.get(["users", currentUser])).value as any;
@@ -348,59 +263,7 @@ serve(async (req) => {
   }
 
   // --- PAGE ROUTING (GET) ---
-  if (url.pathname === "/ai") {
-      return new Response(`
-        <!DOCTYPE html><html><head><title>Soe Kyaw Win AI</title>${commonHead.replace(/<style>[\s\S]*?<\/style>/, `<style>
-            body { background: #0f172a; color: white; font-family: sans-serif; }
-            .chat-container { height: calc(100vh - 130px); overflow-y: auto; padding: 20px; scroll-behavior: smooth; }
-            .msg { max-width: 85%; margin-bottom: 15px; padding: 10px 16px; border-radius: 18px; font-size: 14px; line-height: 1.6; position: relative; }
-            .user { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; align-self: flex-end; margin-left: auto; border-bottom-right-radius: 4px; }
-            .ai { background: #1e293b; color: #e2e8f0; align-self: flex-start; margin-right: auto; border-bottom-left-radius: 4px; border: 1px solid #334155; }
-            .time-stamp { font-size: 10px; margin-top: 4px; opacity: 0.7; text-align: right; display: block; }
-            .typing { font-size: 12px; color: #94a3b8; margin-left: 20px; display: none; }
-        </style>`)}</head>
-        <body class="flex flex-col h-screen">
-          <div class="bg-slate-900 p-4 shadow-xl border-b border-slate-800 z-10 flex justify-between items-center">
-            <div class="flex items-center gap-3">
-                <a href="/" class="text-gray-400 hover:text-white"><i class="fas fa-arrow-left text-xl"></i></a>
-                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-bold shadow-lg"><i class="fas fa-robot"></i></div>
-                <div><h1 class="font-bold text-lg text-white">Soe Kyaw Win AI</h1><div class="flex items-center gap-1 text-[10px] text-green-400 font-bold"><span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> Online</div></div>
-            </div>
-            <button onclick="clearChat()" class="text-gray-400 hover:text-red-500 p-2"><i class="fas fa-trash-alt"></i></button>
-          </div>
-          <div id="chatBox" class="chat-container flex flex-col"></div>
-          <div id="typing" class="typing"><i class="fas fa-circle-notch fa-spin text-blue-500 mr-1"></i> ဖြေကြားနေသည်...</div>
-          <div class="p-3 bg-slate-900 border-t border-slate-800 flex gap-2 items-center pb-6">
-            <input id="msgInput" type="text" placeholder="သိလိုရာ မေးမြန်းပါ..." class="flex-1 bg-slate-800 text-white rounded-full px-5 py-3 focus:outline-none focus:ring-1 focus:ring-blue-500 border border-slate-700">
-            <button onclick="sendMsg()" class="bg-gradient-to-r from-blue-500 to-indigo-600 text-white w-12 h-12 rounded-full flex items-center justify-center shadow-lg"><i class="fas fa-paper-plane text-lg"></i></button>
-          </div>
-          <script>
-            const chatBox = document.getElementById('chatBox'); const input = document.getElementById('msgInput'); const typing = document.getElementById('typing');
-            let chatHistory = JSON.parse(localStorage.getItem('skw_ai_final')) || [];
-            function getMMTime() { return new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Yangon', hour: 'numeric', minute: '2-digit', hour12: true }); }
-            if (chatHistory.length === 0) { addBubble("မင်္ဂလာပါ ဘာကူညီရမလဲဗျ။", 'ai', false, getMMTime()); } else { chatHistory.forEach(c => addBubble(c.text, c.type, false, c.time)); }
-            input.addEventListener("keypress", function(e) { if(e.key === "Enter") sendMsg(); });
-            function saveChat(text, type, time) { chatHistory.push({ text, type, time }); localStorage.setItem('skw_ai_final', JSON.stringify(chatHistory)); }
-            function clearChat() { if(confirm('ဖျက်မှာသေချာလား?')) { localStorage.removeItem('skw_ai_final'); chatHistory = []; chatBox.innerHTML = ''; addBubble("မင်္ဂလာပါ ဘာကူညီရမလဲဗျ။", 'ai', false, getMMTime()); } }
-            async function sendMsg() {
-                const text = input.value.trim(); if(!text) return;
-                const time = getMMTime(); addBubble(text, 'user', true, time); input.value = ''; typing.style.display = 'block'; chatBox.scrollTop = chatBox.scrollHeight;
-                try {
-                    const res = await fetch('/chat', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ message: text }) });
-                    const data = await res.json(); typing.style.display = 'none';
-                    let cleanReply = data.reply.replace(/\\*\\*(.*?)\\*\\*/g, '<b>$1</b>').replace(/\\n/g, '<br>');
-                    addBubble(cleanReply, 'ai', true, getMMTime());
-                } catch(e) { typing.style.display = 'none'; addBubble("Error: " + e.message, 'ai', false, getMMTime()); }
-            }
-            function addBubble(text, type, save, time) {
-                if (save) saveChat(text, type, time);
-                const div = document.createElement('div'); div.className = 'msg ' + type + ' animate-[fadeIn_0.3s_ease-out]';
-                div.innerHTML = \`\${text} <span class="time-stamp">\${time}</span>\`;
-                chatBox.appendChild(div); chatBox.scrollTop = chatBox.scrollHeight;
-            }
-          </script></body></html>
-      `, { headers: { "content-type": "text/html; charset=utf-8" } });
-  }
+  // AI ROUTE AND CHAT REMOVED
 
   if (url.pathname === "/profile") {
       const uKey = ["users", currentUser];
@@ -494,7 +357,6 @@ serve(async (req) => {
                 <div class="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5"><div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">12:01 PM</div><div class="font-bold text-lg" id="res_12">--</div></div><div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">04:30 PM</div><div class="font-bold text-lg" id="res_430">--</div></div></div>
             </div>
             ${sys.tip ? `<div class="glass p-4 rounded-xl border-l-4 border-yellow-500 flex items-center gap-3"><div class="bg-yellow-500/20 p-2 rounded-full"><i class="fas fa-lightbulb text-yellow-500"></i></div><div class="flex-1"><div class="flex justify-between items-center text-[10px] text-gray-400 uppercase font-bold"><span>Daily Tip</span><span>${dateStr}</span></div><div class="font-bold text-sm text-white">${sys.tip}</div></div></div>` : ''}
-            <a href="/ai" onclick="showLoad()" class="block w-full bg-gradient-to-r from-blue-500 to-indigo-600 p-4 rounded-2xl shadow-lg shadow-blue-600/20 flex items-center justify-center gap-3 active:scale-95 transition-transform"><div class="bg-white/20 p-2 rounded-full"><i class="fas fa-robot text-xl text-white"></i></div><span class="font-bold text-white">AI ဆရာ (Chat)</span></a>
             ${!isAdmin ? `<button onclick="openBet()" class="w-full gold-bg p-4 rounded-2xl shadow-lg shadow-yellow-600/20 flex items-center justify-center gap-2 active:scale-95 transition-transform"><i class="fas fa-plus-circle text-xl"></i><span class="font-bold">BET NOW (ထိုးမည်)</span></button>` : ''}
             ${isAdmin ? `<div class="space-y-4"><div class="grid grid-cols-3 gap-2 text-center text-xs"><div class="glass p-2 rounded"><div class="text-green-400">Sale</div><div class="font-mono font-bold">${stats.sale.toLocaleString()}</div></div><div class="glass p-2 rounded"><div class="text-red-400">Payout</div><div class="font-mono font-bold">${stats.payout.toLocaleString()}</div></div><div class="glass p-2 rounded"><div class="text-blue-400">Profit</div><div class="font-mono font-bold">${(stats.sale-stats.payout).toLocaleString()}</div></div></div><div class="glass p-4 rounded-xl space-y-4"><h3 class="text-xs font-bold text-gray-400 uppercase">Management</h3><form action="/admin/payout" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><select name="session" class="input-dark text-xs"><option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option></select><input name="win_number" placeholder="Win" class="input-dark w-16 text-center"><button class="bg-red-600 text-white text-xs px-3 rounded font-bold">PAY</button></form><form action="/admin/topup" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><input name="username" placeholder="User" class="input-dark text-xs"><input name="amount" type="number" placeholder="Amt" class="input-dark w-20 text-xs"><button class="bg-green-600 text-white text-xs px-3 rounded font-bold">TOP</button></form><form action="/admin/block" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><input type="hidden" name="action" value="add"><select name="type" class="input-dark text-xs w-20"><option value="direct">One</option><option value="head">Head</option><option value="tail">Tail</option></select><input name="val" placeholder="Num" class="input-dark w-16 text-xs text-center"><button class="bg-gray-600 text-white text-xs px-2 rounded font-bold">BLK</button><button onclick="this.form.action.value='clear'" class="bg-red-900 text-white text-xs px-2 rounded font-bold">CLR</button></form><form action="/admin/settings" method="POST" onsubmit="adminSubmit(event)" class="space-y-2 border-t border-gray-700 pt-2"><div class="flex gap-2"><input name="rate" placeholder="Rate (80)" class="input-dark text-xs"><input name="tip" placeholder="Daily Tip" class="input-dark text-xs"></div><div class="flex gap-2"><input name="kpay_no" placeholder="Kpay" class="input-dark text-xs"><input name="kpay_name" placeholder="Kname" class="input-dark text-xs"></div><div class="flex gap-2"><input name="wave_no" placeholder="Wave" class="input-dark text-xs"><input name="wave_name" placeholder="Wname" class="input-dark text-xs"></div><input name="tele_link" placeholder="Tele Link" class="input-dark text-xs"><button class="w-full bg-blue-600 text-white text-xs py-2 rounded font-bold">UPDATE SETTINGS</button></form><form action="/admin/reset_pass" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2 border-t border-gray-700 pt-2"><input name="username" placeholder="User" class="input-dark text-xs"><input name="password" placeholder="New Pass" class="input-dark text-xs"><button class="bg-yellow-600 text-white text-xs px-2 rounded font-bold">RESET</button></form><form action="/admin/add_history" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2 border-t border-gray-700 pt-2"><input type="date" name="date" class="input-dark text-xs w-1/3"><input name="morning" placeholder="12:01" class="input-dark text-xs w-1/4"><input name="evening" placeholder="04:30" class="input-dark text-xs w-1/4"><button class="bg-purple-600 text-white text-xs px-2 rounded font-bold">ADD</button></form><div class="flex flex-wrap gap-1 mt-2">${blocks.map(b=>`<span class="text-[10px] bg-red-500/20 text-red-400 px-2 py-1 rounded">${b}</span>`).join('')}</div></div></div>` : ''}
             <div class="glass rounded-xl p-4"><div class="flex justify-between items-center mb-3"><h3 class="font-bold text-gray-300 text-sm">Betting History</h3><div class="flex gap-2"><input id="searchBet" onkeyup="filterBets()" placeholder="Search Num..." class="bg-black/30 border border-gray-600 text-white text-xs rounded px-2 py-1 w-24 focus:outline-none focus:border-yellow-500">${!isAdmin?`<button onclick="clrH()" class="text-xs text-red-400 px-1"><i class="fas fa-trash"></i></button>`:''}</div></div><div class="space-y-2 max-h-60 overflow-y-auto pr-1" id="betListContainer">${bets.length === 0 ? '<div class="text-center text-gray-500 text-xs py-4">No data</div>' : ''}${bets.map(b => `<div class="bet-item flex justify-between items-center p-3 rounded-lg bg-black/20 border-l-2 ${b.status==='WIN'?'border-green-500':b.status==='LOSE'?'border-red-500':'border-yellow-500'}" data-num="${b.number}" data-id="${b.id}" data-date="${b.date}" data-status="${b.status}" data-win="${b.winAmount||0}" data-user="${b.user}"><div><div class="font-mono font-bold text-lg ${b.status==='WIN'?'text-green-400':b.status==='LOSE'?'text-red-400':'text-white'}">${b.number}</div><div class="text-[10px] text-gray-500">${b.time}</div></div><div class="flex items-center gap-2"><div class="text-right"><div class="font-mono text-sm font-bold">${b.amount.toLocaleString()}</div><div class="text-[10px] font-bold ${b.status==='WIN'?'text-green-500':b.status==='LOSE'?'text-red-500':'text-yellow-500'}">${b.status}</div></div>${isAdmin?`<button onclick="delBet('${b.id}')" class="text-red-500 text-xs bg-red-500/10 p-2 rounded hover:bg-red-500 hover:text-white"><i class="fas fa-trash"></i></button>`:''}</div></div>`).join('')}</div></div>
