@@ -18,11 +18,17 @@ const adminCheck = await kv.get(["users", "admin"]);
 if (!adminCheck.value) {
     const s = generateId();
     const h = await hashPassword("admin123", s);
-    await kv.set(["users", "admin"], { passwordHash: h, salt: s, balance: 1000000, joined: new Date().toISOString(), avatar: "https://img.icons8.com/color/96/admin-settings-male.png" });
+    await kv.set(["users", "admin"], { 
+        passwordHash: h, 
+        salt: s, 
+        balance: 1000000, 
+        joined: new Date().toISOString(), 
+        avatar: "https://img.icons8.com/color/96/admin-settings-male.png" 
+    });
     console.log(">> Admin Account Created: admin / admin123");
 }
 
-// --- CRON JOB ---
+// --- CRON JOB (AUTO SAVE HISTORY) ---
 Deno.cron("Save History", "*/2 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
@@ -31,7 +37,7 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
     
-    // FIX: Check API Date matches Today
+    // Fix: Only save if API date matches Today
     if (!data.live || data.live.date !== dateKey) return;
     if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
 
@@ -58,13 +64,17 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
   } catch (e) {}
 });
 
-// --- SERVER ---
+// --- MAIN SERVER ---
 Deno.serve(async (req) => {
   const url = new URL(req.url);
 
   // --- ASSETS ---
   if (url.pathname === "/manifest.json") {
-      return new Response(JSON.stringify({ name: "VIP 2D", short_name: "VIP 2D", start_url: "/", display: "standalone", background_color: "#0f172a", theme_color: "#0f172a", icons: [{ src: "https://img.icons8.com/color/192/shop.png", sizes: "192x192", type: "image/png" }] }), { headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ 
+          name: "VIP 2D", short_name: "VIP 2D", start_url: "/", display: "standalone", 
+          background_color: "#0f172a", theme_color: "#0f172a", 
+          icons: [{ src: "https://img.icons8.com/color/192/shop.png", sizes: "192x192", type: "image/png" }] 
+      }), { headers: { "content-type": "application/json" } });
   }
   if (url.pathname === "/sw.js") {
       return new Response(`self.addEventListener('install',e=>e.waitUntil(caches.open('v2d-v1').then(c=>c.addAll(['/','/manifest.json']))));self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>caches.match(e.request))));`, { headers: { "content-type": "application/javascript" } });
@@ -125,14 +135,22 @@ Deno.serve(async (req) => {
       <a href="/profile" onclick="showLoad()" class="nav-item ${url.pathname==='/profile'?'active':''} flex flex-col items-center text-gray-400 hover:text-yellow-500"><i class="fas fa-user-circle text-lg"></i><span class="text-[10px] mt-1">အကောင့်</span></a>
   </div>`;
 
-  // --- AUTH & USER ---
+  // --- AUTH CHECK ---
   const cookies = req.headers.get("Cookie") || "";
   const userCookie = cookies.split(";").find(c => c.trim().startsWith("user="));
   const currentUser = userCookie ? decodeURIComponent(userCookie.split("=")[1].trim()) : null;
   const isAdmin = currentUser === "admin";
 
+  // --- LOGOUT ACTION (Moved to Top Level to fix 404) ---
+  if (url.pathname === "/logout") {
+    const h = new Headers({ "Location": "/" });
+    h.set("Set-Cookie", `user=; Path=/; Max-Age=0`);
+    return new Response(null, { status: 303, headers: h });
+  }
+
   // --- POST ROUTES ---
   if (req.method === "POST") {
+      // 1. Register
       if (url.pathname === "/register") {
         const form = await req.formData(); const u = form.get("username")?.toString().trim(); const p = form.get("password")?.toString(); const remember = form.get("remember");
         if (u?.toLowerCase() === "admin") return Response.redirect(url.origin + "/?error=forbidden");
@@ -143,6 +161,7 @@ Deno.serve(async (req) => {
         const h = new Headers({ "Location": "/" }); h.set("Set-Cookie", `user=${encodeURIComponent(u)}; Path=/; HttpOnly; SameSite=Lax` + (remember ? "; Max-Age=1296000" : ""));
         return new Response(null, { status: 303, headers: h });
       }
+      // 2. Login
       if (url.pathname === "/login") {
         const form = await req.formData(); const u = form.get("username")?.toString().trim(); const p = form.get("password")?.toString(); const remember = form.get("remember");
         const entry = await kv.get(["users", u]); const data = entry.value as any;
@@ -152,7 +171,6 @@ Deno.serve(async (req) => {
         const h = new Headers({ "Location": "/" }); h.set("Set-Cookie", `user=${encodeURIComponent(u)}; Path=/; HttpOnly; SameSite=Lax` + (remember ? "; Max-Age=1296000" : ""));
         return new Response(null, { status: 303, headers: h });
       }
-      if (url.pathname === "/logout") { const h = new Headers({ "Location": "/" }); h.set("Set-Cookie", `user=; Path=/; Max-Age=0`); return new Response(null, { status: 303, headers: h }); }
       
       // LOGGED IN ACTIONS
       if (!currentUser) return new Response("Unauthorized", {status:401});
@@ -162,6 +180,7 @@ Deno.serve(async (req) => {
       if (url.pathname === "/clear_history") { const iter = kv.list({ prefix: ["bets"] }); for await (const e of iter) { const b = e.value as any; if(b.user === currentUser && b.status !== "PENDING") await kv.delete(e.key); } return new Response(JSON.stringify({status:"ok"})); }
       if (url.pathname === "/delete_transaction") { const f = await req.formData(); const id = f.get("id")?.toString(); if(id) await kv.delete(["transactions", id]); return new Response(JSON.stringify({status:"ok"})); }
       
+      // BETTING ACTION
       if (url.pathname === "/bet") {
         const now = new Date(); const mm = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
         const mins = mm.getHours() * 60 + mm.getMinutes();
@@ -201,7 +220,7 @@ Deno.serve(async (req) => {
         if (url.pathname === "/admin/reset_pass") { const u=f.get("username")?.toString(); const p=f.get("password")?.toString(); if(u&&p){ const r=await kv.get(["users",u]); if(r.value){ const s=generateId(); const h=await hashPassword(p,s); await kv.set(["users",u], {...r.value as any, passwordHash:h, salt:s}); return new Response(JSON.stringify({status:"success"})); } } return new Response(JSON.stringify({status:"error"})); }
         if (url.pathname === "/admin/add_history") { const d=f.get("date")?.toString(); const m=f.get("morning")?.toString(); const e=f.get("evening")?.toString(); if(d) await kv.set(["history",d], {date:d, morning:m, evening:e}); return new Response(JSON.stringify({status:"success"})); }
         if (url.pathname === "/admin/delete_bet") { const id=f.get("id")?.toString(); if(id) await kv.delete(["bets",id]); return new Response(JSON.stringify({status:"success"})); }
-        // NEW: Clear specific date history
+        // Admin: Clear Today's Wrong History
         if (url.pathname === "/admin/clear_today_history") {
              const now = new Date(); const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
              const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
