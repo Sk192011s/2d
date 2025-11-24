@@ -11,7 +11,7 @@ async function hashPassword(p: string, s: string) {
 }
 function generateId() { return crypto.randomUUID(); }
 
-// --- CRON JOB (HISTORY FIX APPLIED HERE) ---
+// --- CRON JOB (HISTORY FIX) ---
 Deno.cron("Save History", "*/5 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
@@ -20,39 +20,40 @@ Deno.cron("Save History", "*/5 * * * *", async () => {
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
     
-    // Weekend check
+    // Sunday (0) and Saturday (6) skip
     if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
 
     let m = "--", e = "--";
-    const curHour = mmDate.getHours(); // Get current hour in Myanmar Time
+    const curHour = mmDate.getHours(); // 24-hour format (0-23)
 
     if (data.result) {
         // Morning Result
         if (data.result[1] && data.result[1].twod) m = data.result[1].twod;
         
-        // Evening Result Logic Fix
-        // ညနေပိုင်း (မွန်းလွဲ ၂ နာရီကျော်မှသာ ညနေ result ကို စစ်မယ်)
-        if (curHour >= 14) {
+        // Evening Result Logic
+        // ညနေ ၄ နာရီ (16) ကျော်မှသာ ညနေပိုင်း result ကို လက်ခံမယ်
+        if (curHour >= 16) {
             const ev = data.result[3] || data.result[2];
             if (ev && ev.twod) e = ev.twod;
         }
+        // ညနေ ၄ နာရီ မထိုးခင် API က 00 လို့ပို့ရင်လည်း -- ပဲ သတ်မှတ်မယ်
+        if (curHour < 16) {
+            e = "--";
+        }
     }
 
-    // "00" Fix: ညနေ ၄ နာရီ မထိုးခင် "00" ပေါ်နေရင် "--" လို့ပဲ သတ်မှတ်မယ်
-    if (e === "00" && curHour < 16) {
-        e = "--";
-    }
-
-    if (m !== "--" || e !== "--") {
+    // Save to KV if there is data
+    // မနက်ပိုင်းထွက်ပြီး ညနေမထွက်သေးရင်လည်း update လုပ်မယ် (00 အမှားပြင်ဖို့)
+    if (m !== "--" || (e === "--" && curHour < 16)) {
         const ex = await kv.get(["history", dateKey]);
         const old = ex.value as any || { morning: "--", evening: "--" };
-        // ညနေခင်း result မထွက်သေးရင် အဟောင်းအတိုင်းပဲထားမယ် (00 ပြဿနာရှင်းရန်)
-        const newMorning = m !== "--" ? m : old.morning;
-        const newEvening = e !== "--" ? e : old.evening;
         
+        // အကယ်၍ Database ထဲမှာ 00 ဝင်နေပြီး အခုချိန်က ၄နာရီမထိုးသေးရင် -- နဲ့ ပြန် overwrite လုပ်မယ်
+        const finalE = (curHour < 16) ? "--" : (e !== "--" ? e : old.evening);
+
         await kv.set(["history", dateKey], { 
-            morning: newMorning, 
-            evening: newEvening, 
+            morning: m !== "--" ? m : old.morning, 
+            evening: finalE, 
             date: dateKey 
         });
     }
@@ -99,6 +100,10 @@ serve(async (req) => {
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
     .nav-item.active { color: #eab308; }
     .nav-item.active i { transform: translateY(-5px); transition: 0.3s; }
+    
+    /* Blinking Animation for Live Number */
+    .blink-live { animation: blinker 1.5s linear infinite; }
+    @keyframes blinker { 50% { opacity: 0.3; } }
   </style>
   <script>
     if ('serviceWorker' in navigator) { window.addEventListener('load', ()=>navigator.serviceWorker.register('/sw.js')); }
@@ -192,8 +197,6 @@ serve(async (req) => {
 
   // --- AUTHENTICATED ACTIONS (POST) ---
   if (req.method === "POST") {
-    // AI CHAT REMOVED HERE
-
     if (url.pathname === "/update_avatar") {
         const form = await req.formData(); const img = form.get("avatar")?.toString();
         const uData = (await kv.get(["users", currentUser])).value as any;
@@ -263,8 +266,6 @@ serve(async (req) => {
   }
 
   // --- PAGE ROUTING (GET) ---
-  // AI ROUTE AND CHAT REMOVED
-
   if (url.pathname === "/profile") {
       const uKey = ["users", currentUser];
       const uData = (await kv.get(uKey)).value as any;
@@ -353,7 +354,7 @@ serve(async (req) => {
             <div class="glass rounded-3xl p-6 text-center relative overflow-hidden group">
                 <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-500 to-transparent opacity-50"></div>
                 <div class="flex justify-between text-xs text-gray-400 mb-2 font-mono"><span id="live_date">--</span><span class="text-red-500 animate-pulse font-bold">● LIVE</span></div>
-                <div class="py-2"><div id="live_twod" class="text-7xl font-bold gold-text font-mono drop-shadow-lg tracking-tighter">--</div><div class="text-xs text-gray-500 mt-2 font-mono">Updated: <span id="live_time">--:--:--</span></div></div>
+                <div class="py-2"><div id="live_twod" class="text-7xl font-bold gold-text font-mono drop-shadow-lg tracking-tighter blink-live">--</div><div class="text-xs text-gray-500 mt-2 font-mono">Updated: <span id="live_time">--:--:--</span></div></div>
                 <div class="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5"><div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">12:01 PM</div><div class="font-bold text-lg" id="res_12">--</div></div><div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">04:30 PM</div><div class="font-bold text-lg" id="res_430">--</div></div></div>
             </div>
             ${sys.tip ? `<div class="glass p-4 rounded-xl border-l-4 border-yellow-500 flex items-center gap-3"><div class="bg-yellow-500/20 p-2 rounded-full"><i class="fas fa-lightbulb text-yellow-500"></i></div><div class="flex-1"><div class="flex justify-between items-center text-[10px] text-gray-400 uppercase font-bold"><span>Daily Tip</span><span>${dateStr}</span></div><div class="font-bold text-sm text-white">${sys.tip}</div></div></div>` : ''}
