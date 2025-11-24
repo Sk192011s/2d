@@ -25,6 +25,42 @@ if (!adminCheck.value) {
     });
 }
 
+// --- CRON JOB ---
+Deno.cron("Save History", "*/2 * * * *", async () => {
+  try {
+    const res = await fetch("https://api.thaistock2d.com/live");
+    const data = await res.json();
+    const now = new Date();
+    const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
+    const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
+    
+    if (!data.live || data.live.date !== dateKey) return;
+    if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
+
+    const curHour = mmDate.getHours();
+    let m = "--", e = "--";
+
+    if (data.result) {
+        if (data.result[1] && data.result[1].twod) m = data.result[1].twod;
+        if (curHour >= 16) {
+            const ev = data.result[3] || data.result[2];
+            if (ev && ev.twod) e = ev.twod;
+        }
+    }
+
+    const ex = await kv.get(["history", dateKey]);
+    let needSave = false;
+    const old = ex.value as any || { morning: "--", evening: "--" };
+    
+    let saveM = old.morning; let saveE = old.evening;
+    if (m !== "--" && m !== old.morning) { saveM = m; needSave = true; }
+    if (old.evening === "00" && curHour < 16) { saveE = "--"; needSave = true; } 
+    else if (e !== "--" && e !== old.evening) { saveE = e; needSave = true; }
+
+    if (needSave) await kv.set(["history", dateKey], { morning: saveM, evening: saveE, date: dateKey });
+  } catch (e) {}
+});
+
 // --- MAIN SERVER ---
 Deno.serve(async (req) => {
   const url = new URL(req.url);
@@ -41,7 +77,7 @@ Deno.serve(async (req) => {
       return new Response(`self.addEventListener('install',e=>e.waitUntil(caches.open('v2d-v1').then(c=>c.addAll(['/','/manifest.json']))));self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>caches.match(e.request))));`, { headers: { "content-type": "application/javascript" } });
   }
 
-  // --- SERVER DATE (TIMEZONE FIX) ---
+  // --- SERVER DATE CALCULATION ---
   const now = new Date();
   const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
   const SERVER_TODAY_KEY = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
@@ -168,10 +204,38 @@ Deno.serve(async (req) => {
         if (url.pathname === "/admin/reset_pass") { const u=f.get("username")?.toString(); const p=f.get("password")?.toString(); if(u&&p){ const r=await kv.get(["users",u]); if(r.value){ const s=generateId(); const h=await hashPassword(p,s); await kv.set(["users",u], {...r.value as any, passwordHash:h, salt:s}); return new Response(JSON.stringify({status:"success"})); } } return new Response(JSON.stringify({status:"error"})); }
         if (url.pathname === "/admin/add_history") { const d=f.get("date")?.toString(); const m=f.get("morning")?.toString(); const e=f.get("evening")?.toString(); if(d) await kv.set(["history",d], {date:d, morning:m, evening:e}); return new Response(JSON.stringify({status:"success"})); }
         if (url.pathname === "/admin/delete_bet") { const id=f.get("id")?.toString(); if(id) await kv.delete(["bets",id]); return new Response(JSON.stringify({status:"success"})); }
+        if (url.pathname === "/admin/clear_today_history") { await kv.delete(["history", SERVER_TODAY_KEY]); return new Response(JSON.stringify({status:"success"})); }
       }
   }
 
-  // --- HISTORY PAGE ---
+  if (!currentUser) {
+    return new Response(`<!DOCTYPE html><html><head><title>Login</title>${commonHead}</head><body class="flex items-center justify-center min-h-screen bg-[url('https://images.unsplash.com/photo-1605218427360-36390f8584b0')] bg-cover bg-center">
+    <div class="absolute inset-0 bg-black/80"></div>${loaderHTML}
+    <div class="relative z-10 w-full max-w-sm p-6">
+      <div class="text-center mb-8"><i class="fas fa-crown text-5xl gold-text mb-2"></i><h1 class="text-3xl font-bold text-white tracking-widest">VIP 2D</h1><p class="text-gray-400 text-xs uppercase tracking-[0.2em]">Premium Betting</p></div>
+      <div class="glass rounded-2xl p-6 shadow-2xl border-t border-white/10">
+        <div class="flex mb-6 bg-slate-800/50 rounded-lg p-1"><button onclick="switchTab('login')" id="tabLogin" class="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white transition-all">အကောင့်ဝင်ရန်</button><button onclick="switchTab('reg')" id="tabReg" class="flex-1 py-2 text-sm font-bold rounded-md text-gray-400 hover:text-white transition-all">အကောင့်သစ်ဖွင့်</button></div>
+        <form id="loginForm" action="/login" method="POST" onsubmit="showLoad()"><div class="space-y-4"><div class="relative"><i class="fas fa-user absolute left-3 top-3.5 text-gray-500"></i><input name="username" placeholder="အမည် (Username)" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><div class="relative"><i class="fas fa-lock absolute left-3 top-3.5 text-gray-500"></i><input name="password" type="password" placeholder="စကားဝှက် (Password)" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><label class="flex items-center text-xs text-gray-400"><input type="checkbox" name="remember" class="mr-2" checked> မှတ်သားထားမည် (၁၅ ရက်)</label><button class="w-full py-3 rounded-xl gold-bg font-bold shadow-lg text-black">အကောင့်ဝင်မည်</button></div></form>
+        <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoad()"><div class="space-y-4"><div class="relative"><i class="fas fa-user-plus absolute left-3 top-3.5 text-gray-500"></i><input name="username" placeholder="အမည်အသစ်ပေးပါ" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><div class="relative"><i class="fas fa-key absolute left-3 top-3.5 text-gray-500"></i><input name="password" type="password" placeholder="စကားဝှက်အသစ်ပေးပါ" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><label class="flex items-center text-xs text-gray-400"><input type="checkbox" name="remember" class="mr-2" checked> မှတ်သားထားမည် (၁၅ ရက်)</label><button class="w-full py-3 rounded-xl bg-slate-700 text-white font-bold hover:bg-slate-600">အကောင့်ဖွင့်မည်</button></div></form>
+      </div>
+    </div>
+    <script> function switchTab(t) { const l=document.getElementById('loginForm'),r=document.getElementById('regForm'),tl=document.getElementById('tabLogin'),tr=document.getElementById('tabReg'); if(t==='login'){l.classList.remove('hidden');r.classList.add('hidden');tl.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tr.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";}else{l.classList.add('hidden');r.classList.remove('hidden');tr.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tl.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";} } const u=new URLSearchParams(location.search); if(u.get('error')==='forbidden') Swal.fire({icon:'error',title:'မရနိုင်ပါ',text:'Admin အမည်ဖြင့် ဖွင့်ခွင့်မရှိပါ'}); else if(u.get('error')) Swal.fire({icon:'error',title:'မှားယွင်းနေသည်',text:'အမည် သို့မဟုတ် စကားဝှက် မှားယွင်းနေပါသည်',background:'#1e293b',color:'#fff'}); </script></body></html>`, { headers: { "content-type": "text/html" } });
+  }
+
+  const uKey = ["users", currentUser];
+  const uData = (await kv.get(uKey)).value as any;
+  if (!uData) return Response.redirect(url.origin + "/logout");
+  const balance = uData.balance || 0;
+
+  if (url.pathname === "/profile") {
+      const avatar = uData.avatar || "";
+      const txs = []; for await (const e of kv.list({prefix:["transactions"]}, {reverse:true, limit:50})) { if(e.value.user===currentUser) { const t = e.value; t.id=e.key[1]; txs.push(t); } }
+      const contact = (await kv.get(["system", "contact"])).value as any || {};
+      let todayWin = 0, todayLose = 0;
+      for await (const e of kv.list({ prefix: ["bets"] })) { const b = e.value as any; if(b.user === currentUser && b.date === dateStr) { if(b.status === 'WIN') todayWin += (b.winAmount || 0); if(b.status === 'LOSE') todayLose += b.amount; } }
+      return new Response(`<!DOCTYPE html><html><head><title>Profile</title>${commonHead}</head><body>${loaderHTML}${navHTML}<div class="p-6 max-w-md mx-auto space-y-4 pb-24"><div class="glass p-6 rounded-3xl text-center relative mt-4"><div class="relative w-24 h-24 mx-auto mb-3"><div class="w-24 h-24 rounded-full border-4 border-yellow-500 overflow-hidden relative bg-slate-800 flex items-center justify-center">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-gray-500"></i>`}</div><button onclick="document.getElementById('fIn').click()" class="absolute bottom-0 right-0 bg-white text-black rounded-full p-2 border-2 border-slate-900"><i class="fas fa-camera text-xs"></i></button><input type="file" id="fIn" hidden accept="image/*" onchange="upAv(this)"></div><h1 class="text-xl font-bold text-white uppercase">${escapeHtml(currentUser)}</h1><div class="text-yellow-500 font-mono font-bold text-lg">${balance.toLocaleString()} Ks</div></div><div class="grid grid-cols-2 gap-2 text-center"><div class="glass p-3 rounded-xl border-l-2 border-green-500"><div class="text-xs text-gray-400">ဒီနေ့ နိုင်ငွေ</div><div class="font-bold text-green-400 text-sm">+${todayWin.toLocaleString()}</div></div><div class="glass p-3 rounded-xl border-l-2 border-red-500"><div class="text-xs text-gray-400">ဒီနေ့ ရှုံးငွေ</div><div class="font-bold text-red-400 text-sm">-${todayLose.toLocaleString()}</div></div></div><div class="glass p-4 rounded-xl space-y-3"><h3 class="text-xs font-bold text-gray-400 uppercase">Admin ထံဆက်သွယ်ရန်</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-900/40 p-2 rounded border border-blue-500/30 text-center"><div class="text-blue-400 text-xs">KPay</div><div class="font-bold select-all text-sm">${contact.kpay_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.kpay_name||''}</div></div><div class="bg-yellow-900/40 p-2 rounded border border-yellow-500/30 text-center"><div class="text-yellow-400 text-xs">Wave</div><div class="font-bold select-all text-sm">${contact.wave_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.wave_name||''}</div></div></div><a href="${contact.tele_link||'#'}" target="_blank" class="block w-full bg-blue-600 text-white text-center py-2 rounded font-bold"><i class="fab fa-telegram"></i> Telegram Channel</a></div><form action="/change_password" method="POST" class="glass p-4 rounded-xl flex gap-2" onsubmit="showLoad()"><input type="password" name="new_password" placeholder="စကားဝှက်အသစ်" class="input-dark text-sm" required><button class="bg-yellow-600 text-white px-4 rounded font-bold text-xs whitespace-nowrap">ချိန်းမည်</button></form><div class="glass rounded-xl p-4"><h3 class="text-xs font-bold text-gray-400 uppercase mb-3">ငွေဖြည့်မှတ်တမ်း</h3><div class="space-y-2 h-48 overflow-y-auto">${txs.length?txs.map(t=>`<div class="flex justify-between items-center p-2 bg-slate-800 rounded border-l-2 border-green-500" onclick="showTx('${t.time}', '${t.amount}', '${t.type}')"><div><span class="text-xs text-gray-400 block">${t.time}</span><span class="text-[10px] text-blue-400 font-bold">Admin Top-up</span></div><div class="flex items-center gap-2"><span class="font-bold text-green-400">+${t.amount}</span><button onclick="delTx(event, '${t.id}')" class="text-gray-600 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button></div></div>`).join(''):'<div class="text-center text-xs text-gray-500">မှတ်တမ်း မရှိပါ</div>'}</div></div><button onclick="doLogout()" class="block w-full text-center text-red-400 text-sm font-bold py-4">အကောင့်ထွက်မည် (LOGOUT)</button></div><script>function upAv(i){if(i.files&&i.files[0]){const r=new FileReader();r.onload=function(e){const im=new Image();im.src=e.target.result;im.onload=function(){const c=document.createElement('canvas');const x=c.getContext('2d');c.width=150;c.height=150;x.drawImage(im,0,0,150,150);showLoad();const fd=new FormData();fd.append('avatar',c.toDataURL('image/jpeg',0.7));fetch('/update_avatar',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{hideLoad();location.reload();});}};r.readAsDataURL(i.files[0]);}}const u=new URLSearchParams(location.search);if(u.get('msg')==='pass_ok')Swal.fire({icon:'success',title:'အောင်မြင်သည်',text:'စကားဝှက်ပြောင်းလဲပြီးပါပြီ',background:'#1e293b',color:'#fff'});function showTx(t,a,type){Swal.fire({title:'ငွေဖြည့်မှတ်တမ်း',html:\`<div class="text-left">အမျိုးအစား: <b>\${type}</b><br>ပမာဏ: <b class="text-green-400">\${a} Ks</b><br>အချိန်: \${t}</div>\`,background:'#1e293b',color:'#fff'});}function delTx(e,id){e.stopPropagation();Swal.fire({title:'မှတ်တမ်းဖျက်မလား?',icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'ဖျက်မည်',cancelButtonText:'မလုပ်တော့ပါ',background:'#1e293b',color:'#fff'}).then(r=>{if(r.isConfirmed){const fd=new FormData();fd.append('id',id);fetch('/delete_transaction',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{if(d.status==='ok')location.reload();});}});}</script></body></html>`, { headers: {"content-type": "text/html"} });
+  }
+
   if (url.pathname === "/history") {
       try {
           const r = await fetch("https://api.thaistock2d.com/2d_result");
@@ -229,7 +293,7 @@ Deno.serve(async (req) => {
             </div>
             ${sys.tip ? `<div class="glass p-4 rounded-xl border-l-4 border-yellow-500 flex items-center gap-3"><div class="bg-yellow-500/20 p-2 rounded-full"><i class="fas fa-lightbulb text-yellow-500"></i></div><div class="flex-1"><div class="flex justify-between items-center text-[10px] text-gray-400 uppercase font-bold"><span>တစ်နေ့တာ အကြံပြုချက်</span><span>${dateStr}</span></div><div class="font-bold text-sm text-white">${sys.tip}</div></div></div>` : ''}
             ${!isAdmin ? `<button onclick="openBet()" class="w-full gold-bg p-4 rounded-2xl shadow-lg shadow-yellow-600/20 flex items-center justify-center gap-2 active:scale-95 transition-transform"><i class="fas fa-plus-circle text-xl"></i><span class="font-bold">ထိုးမည် (BET NOW)</span></button>` : ''}
-            ${isAdmin ? `<div class="space-y-4"><div class="grid grid-cols-3 gap-2 text-center text-xs"><div class="glass p-2 rounded"><div class="text-green-400">Sale</div><div class="font-mono font-bold">${stats.sale.toLocaleString()}</div></div><div class="glass p-2 rounded"><div class="text-red-400">Payout</div><div class="font-mono font-bold">${stats.payout.toLocaleString()}</div></div><div class="glass p-2 rounded"><div class="text-blue-400">Profit</div><div class="font-mono font-bold">${(stats.sale-stats.payout).toLocaleString()}</div></div></div><div class="glass p-4 rounded-xl space-y-4"><h3 class="text-xs font-bold text-gray-400 uppercase">Management</h3><form action="/admin/payout" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><select name="session" class="input-dark text-xs"><option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option></select><input name="win_number" placeholder="Win" class="input-dark w-16 text-center"><button class="bg-red-600 text-white text-xs px-3 rounded font-bold">PAY</button></form><form action="/admin/topup" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><input name="username" placeholder="User" class="input-dark text-xs"><input name="amount" type="number" placeholder="Amt" class="input-dark w-20 text-xs"><button class="bg-green-600 text-white text-xs px-3 rounded font-bold">TOP</button></form><form action="/admin/block" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><input type="hidden" name="action" value="add"><select name="type" class="input-dark text-xs w-20"><option value="direct">One</option><option value="head">Head</option><option value="tail">Tail</option></select><input name="val" placeholder="Num" class="input-dark w-16 text-xs text-center"><button class="bg-gray-600 text-white text-xs px-2 rounded font-bold">BLK</button><button onclick="this.form.action.value='clear'" class="bg-red-900 text-white text-xs px-2 rounded font-bold">CLR</button></form><form action="/admin/settings" method="POST" onsubmit="adminSubmit(event)" class="space-y-2 border-t border-gray-700 pt-2"><div class="flex gap-2"><input name="rate" placeholder="Rate (80)" class="input-dark text-xs"><input name="tip" placeholder="Daily Tip" class="input-dark text-xs"></div><div class="flex gap-2"><input name="kpay_no" placeholder="Kpay" class="input-dark text-xs"><input name="kpay_name" placeholder="Kname" class="input-dark text-xs"></div><div class="flex gap-2"><input name="wave_no" placeholder="Wave" class="input-dark text-xs"><input name="wave_name" placeholder="Wname" class="input-dark text-xs"></div><input name="tele_link" placeholder="Tele Link" class="input-dark text-xs"><button class="w-full bg-blue-600 text-white text-xs py-2 rounded font-bold">UPDATE SETTINGS</button></form><div class="border-t border-gray-700 pt-2 grid grid-cols-2 gap-2"><form action="/admin/reset_pass" method="POST" onsubmit="adminSubmit(event)" class="col-span-2 flex gap-2"><input name="username" placeholder="User" class="input-dark text-xs"><input name="password" placeholder="Pass" class="input-dark text-xs"><button class="bg-yellow-600 text-white text-xs px-2 rounded font-bold">RST</button></form></div><div class="flex flex-wrap gap-1 mt-2">${blocks.map(b=>`<span class="text-[10px] bg-red-500/20 text-red-400 px-2 py-1 rounded">${b}</span>`).join('')}</div></div></div>` : ''}
+            ${isAdmin ? `<div class="space-y-4"><div class="grid grid-cols-3 gap-2 text-center text-xs"><div class="glass p-2 rounded"><div class="text-green-400">Sale</div><div class="font-mono font-bold">${stats.sale.toLocaleString()}</div></div><div class="glass p-2 rounded"><div class="text-red-400">Payout</div><div class="font-mono font-bold">${stats.payout.toLocaleString()}</div></div><div class="glass p-2 rounded"><div class="text-blue-400">Profit</div><div class="font-mono font-bold">${(stats.sale-stats.payout).toLocaleString()}</div></div></div><div class="glass p-4 rounded-xl space-y-4"><h3 class="text-xs font-bold text-gray-400 uppercase">Management</h3><form action="/admin/payout" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><select name="session" class="input-dark text-xs"><option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option></select><input name="win_number" placeholder="Win" class="input-dark w-16 text-center"><button class="bg-red-600 text-white text-xs px-3 rounded font-bold">PAY</button></form><form action="/admin/topup" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><input name="username" placeholder="User" class="input-dark text-xs"><input name="amount" type="number" placeholder="Amt" class="input-dark w-20 text-xs"><button class="bg-green-600 text-white text-xs px-3 rounded font-bold">TOP</button></form><form action="/admin/block" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><input type="hidden" name="action" value="add"><select name="type" class="input-dark text-xs w-20"><option value="direct">One</option><option value="head">Head</option><option value="tail">Tail</option></select><input name="val" placeholder="Num" class="input-dark w-16 text-xs text-center"><button class="bg-gray-600 text-white text-xs px-2 rounded font-bold">BLK</button><button onclick="this.form.action.value='clear'" class="bg-red-900 text-white text-xs px-2 rounded font-bold">CLR</button></form><form action="/admin/settings" method="POST" onsubmit="adminSubmit(event)" class="space-y-2 border-t border-gray-700 pt-2"><div class="flex gap-2"><input name="rate" placeholder="Rate (80)" class="input-dark text-xs"><input name="tip" placeholder="Daily Tip" class="input-dark text-xs"></div><div class="flex gap-2"><input name="kpay_no" placeholder="Kpay" class="input-dark text-xs"><input name="kpay_name" placeholder="Kname" class="input-dark text-xs"></div><div class="flex gap-2"><input name="wave_no" placeholder="Wave" class="input-dark text-xs"><input name="wave_name" placeholder="Wname" class="input-dark text-xs"></div><input name="tele_link" placeholder="Tele Link" class="input-dark text-xs"><button class="w-full bg-blue-600 text-white text-xs py-2 rounded font-bold">UPDATE SETTINGS</button></form><div class="border-t border-gray-700 pt-2 grid grid-cols-2 gap-2"><form action="/admin/add_history" method="POST" onsubmit="adminSubmit(event)" class="col-span-2 flex gap-2"><input type="date" name="date" class="input-dark text-xs w-1/3"><input name="morning" placeholder="12:01" class="input-dark text-xs w-1/4"><input name="evening" placeholder="04:30" class="input-dark text-xs w-1/4"><button class="bg-purple-600 text-white text-xs px-2 rounded font-bold">ADD</button></form><form action="/admin/clear_today_history" method="POST" onsubmit="adminSubmit(event)"><button class="w-full bg-red-800 text-white text-xs py-2 rounded font-bold">CLEAR TODAY HISTORY</button></form><form action="/admin/reset_pass" method="POST" onsubmit="adminSubmit(event)"><div class="flex gap-2"><input name="username" placeholder="User" class="input-dark text-xs"><input name="password" placeholder="Pass" class="input-dark text-xs"><button class="bg-yellow-600 text-white text-xs px-2 rounded font-bold">RST</button></div></form></div><div class="flex flex-wrap gap-1 mt-2">${blocks.map(b=>`<span class="text-[10px] bg-red-500/20 text-red-400 px-2 py-1 rounded">${b}</span>`).join('')}</div></div></div>` : ''}
             <div class="glass rounded-xl p-4"><div class="flex justify-between items-center mb-3"><h3 class="font-bold text-gray-300 text-sm">ထိုးထားသော စာရင်းများ</h3><div class="flex gap-2"><input id="searchBet" onkeyup="filterBets()" placeholder="ဂဏန်းရှာရန်..." class="bg-black/30 border border-gray-600 text-white text-xs rounded px-2 py-1 w-24 focus:outline-none focus:border-yellow-500">${!isAdmin?`<button onclick="clrH()" class="text-xs text-red-400 px-1"><i class="fas fa-trash"></i></button>`:''}</div></div><div class="space-y-2 max-h-60 overflow-y-auto pr-1" id="betListContainer">${bets.length === 0 ? '<div class="text-center text-gray-500 text-xs py-4">မှတ်တမ်း မရှိပါ</div>' : ''}${bets.map(b => `<div class="bet-item flex justify-between items-center p-3 rounded-lg bg-black/20 border-l-2 ${b.status==='WIN'?'border-green-500':b.status==='LOSE'?'border-red-500':'border-yellow-500'}" data-num="${b.number}" data-id="${b.id}" data-date="${b.date}" data-status="${b.status}" data-win="${b.winAmount||0}" data-user="${b.user}"><div><div class="font-mono font-bold text-lg ${b.status==='WIN'?'text-green-400':b.status==='LOSE'?'text-red-400':'text-white'}">${b.number}</div><div class="text-[10px] text-gray-500">${b.time}</div></div><div class="flex items-center gap-2"><div class="text-right"><div class="font-mono text-sm font-bold">${b.amount.toLocaleString()}</div><div class="text-[10px] font-bold ${b.status==='WIN'?'text-green-500':b.status==='LOSE'?'text-red-500':'text-yellow-500'}">${b.status}</div></div>${isAdmin?`<button onclick="delBet('${b.id}')" class="text-red-500 text-xs bg-red-500/10 p-2 rounded hover:bg-red-500 hover:text-white"><i class="fas fa-trash"></i></button>`:''}</div></div>`).join('')}</div></div>
         </div>
         ${navHTML}
@@ -246,17 +310,16 @@ Deno.serve(async (req) => {
             
             async function upL(){
                 try {
-                    const now = new Date();
+                    // Rolling Logic (Always check first)
+                    const now = new Date(); 
                     const mins = now.getHours() * 60 + now.getMinutes(); 
-                    
-                    // 1. Rolling Logic (9:30 - 12:01 & 2:00 - 4:30)
+                    // Live times: 9:30-12:01 AND 2:00-4:30
                     const isLiveTime = (mins >= 570 && mins <= 721) || (mins >= 840 && mins <= 990);
                     if(isLiveTime && !rollTimer) startRolling();
 
-                    // 2. Fetch Data
                     const r = await fetch(API); const d = await r.json();
                     
-                    // 3. Strict Date Check
+                    // Strict Date Check
                     if (d.live && d.live.date !== SERVER_TODAY) {
                         stopRolling("--");
                         document.getElementById('res_930').innerText = "--";
@@ -268,14 +331,13 @@ Deno.serve(async (req) => {
                         return;
                     }
 
-                    // 4. Data Extraction (No Time Gate)
+                    // Data Extraction (WITHOUT Time Gate)
                     if(d.result){
                         const r930 = d.result[0]?.twod || "--"; 
                         const r12 = d.result[1]?.twod || "--"; 
                         const r200 = d.result[2]?.twod || "--"; 
                         let r430 = (d.result[3] || d.result[2])?.twod || "--";
                         
-                        // Safety check for evening 00 glitch
                         const h = new Date().getHours();
                         if(h < 16 && r430 === "00") r430 = "--";
                         
