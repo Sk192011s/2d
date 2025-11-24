@@ -269,7 +269,6 @@ serve(async (req) => {
       let todayWin = 0, todayLose = 0;
       const bIter = kv.list({ prefix: ["bets"] });
       
-      // IMPROVED DATE CHECKING LOGIC
       const now = new Date();
       const todayFormatter = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Yangon", day: "numeric", month: "numeric", year: "numeric" });
       const todayParts = todayFormatter.formatToParts(now);
@@ -280,20 +279,16 @@ serve(async (req) => {
       for await (const e of bIter) { 
         const b = e.value as any; 
         if(b.user === currentUser) { 
-            // Calculate date from ID (Timestamp) to be 100% sure
             let isToday = false;
             try {
-                const ts = parseInt(b.id.substring(0, 13)); // ID starts with timestamp
+                const ts = parseInt(b.id.substring(0, 13));
                 const bDate = new Date(ts);
                 const bParts = todayFormatter.formatToParts(bDate);
                 const bDay = bParts.find(p => p.type === "day")?.value;
                 const bMonth = bParts.find(p => p.type === "month")?.value;
                 const bYear = bParts.find(p => p.type === "year")?.value;
                 if(tDay===bDay && tMonth===bMonth && tYear===bYear) isToday = true;
-            } catch(e) {
-                // Fallback to string match
-                if(b.date === dateStr) isToday = true;
-            }
+            } catch(e) { if(b.date === dateStr) isToday = true; }
 
             if(isToday) {
                 if(b.status === 'WIN') todayWin += (b.winAmount || 0); 
@@ -392,32 +387,31 @@ serve(async (req) => {
                 const r=await fetch(API);const d=await r.json();
                 const now = new Date(); const h = now.getHours();
                 const liveEl = document.getElementById('live_twod');
-                
+                let shouldBlink = (d.live.status === '1');
                 if(d.live){
                    liveEl.innerText=d.live.twod||"--";
                    document.getElementById('live_time').innerText=d.live.time||"--:--:--";
                    document.getElementById('live_date').innerText=d.live.date||"Today";
-                   // Stop blinking if market closed (status 0) OR value is "--"
-                   if(d.live.status === '0' || d.live.twod === '--') liveEl.classList.remove('blink-live');
-                   else liveEl.classList.add('blink-live');
+                   if(d.live.twod === '--') shouldBlink = false;
                 }
-                
                 if(d.result){
                     const newM = d.result[1] ? d.result[1].twod : "--";
                     const ev = d.result[3]||d.result[2];
                     let newE = ev ? ev.twod : "--";
-                    if(h < 16 && newE === "00") newE = "--"; // 00 Fix
-
+                    if(h < 16 && newE === "00") newE = "--";
                     document.getElementById('res_12').innerText = newM;
                     document.getElementById('res_430').innerText = newE;
+                    
+                    if(h === 12 && newM === d.live.twod) shouldBlink = false;
+                    if(h >= 16 && newE === d.live.twod) shouldBlink = false;
 
-                    // NOTIFICATIONS
                     if(!firstLoad) {
                         if(lastM === "--" && newM !== "--") Swal.fire({title:'မနက်ပိုင်း ဂဏန်းထွက်ပါပြီ!', text: newM, icon:'info', confirmButtonColor: '#eab308'});
                         if(lastE === "--" && newE !== "--") Swal.fire({title:'ညနေပိုင်း ဂဏန်းထွက်ပါပြီ!', text: newE, icon:'info', confirmButtonColor: '#eab308'});
                     }
                     lastM = newM; lastE = newE; firstLoad = false;
                 }
+                if(shouldBlink) liveEl.classList.add('blink-live'); else liveEl.classList.remove('blink-live');
             }catch(e){}}setInterval(upL,2000);upL();
             function filterBets() { const v = document.getElementById('searchBet').value.trim(); document.querySelectorAll('.bet-item').forEach(i => { i.style.display = i.getAttribute('data-num').includes(v) ? 'flex' : 'none'; }); }
             function closeVoucher() { showLoad(); setTimeout(() => location.reload(), 100); }
