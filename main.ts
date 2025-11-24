@@ -26,7 +26,7 @@ if (!adminCheck.value) {
     console.log(">> Admin Account Created: admin / admin123");
 }
 
-// --- CRON JOB (AUTO SAVE HISTORY - SERVER SIDE FIX) ---
+// --- CRON JOB (AUTO SAVE HISTORY) ---
 Deno.cron("Save History", "*/2 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
@@ -35,7 +35,7 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
     
-    // Server Side Date Check
+    // Strict Check: Only save if API date matches Today
     if (!data.live || data.live.date !== dateKey) return;
     if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
 
@@ -79,6 +79,13 @@ Deno.serve(async (req) => {
       return new Response(`self.addEventListener('install',e=>e.waitUntil(caches.open('v2d-v1').then(c=>c.addAll(['/','/manifest.json']))));self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>caches.match(e.request))));`, { headers: { "content-type": "application/javascript" } });
   }
 
+  // --- SERVER DATE CALCULATION ---
+  // We calculate the date ONCE here and inject it into the HTML
+  const now = new Date();
+  const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
+  const SERVER_TODAY_KEY = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
+  const dateStr = mmDate.toLocaleString("en-US", { day: 'numeric', month: 'short', year: 'numeric' });
+
   // --- HTML TEMPLATES ---
   const commonHead = `
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
@@ -110,6 +117,7 @@ Deno.serve(async (req) => {
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
   <script>
+    const SERVER_DATE_KEY = "${SERVER_TODAY_KEY}"; // Inject Server Date
     if ('serviceWorker' in navigator) { window.addEventListener('load', ()=>navigator.serviceWorker.register('/sw.js')); }
     function showLoad() { document.getElementById('loader').classList.remove('hidden'); }
     function hideLoad() { document.getElementById('loader').classList.add('hidden'); }
@@ -179,10 +187,8 @@ Deno.serve(async (req) => {
       if (url.pathname === "/clear_history") { const iter = kv.list({ prefix: ["bets"] }); for await (const e of iter) { const b = e.value as any; if(b.user === currentUser && b.status !== "PENDING") await kv.delete(e.key); } return new Response(JSON.stringify({status:"ok"})); }
       if (url.pathname === "/delete_transaction") { const f = await req.formData(); const id = f.get("id")?.toString(); if(id) await kv.delete(["transactions", id]); return new Response(JSON.stringify({status:"ok"})); }
       
-      // BETTING
       if (url.pathname === "/bet") {
-        const now = new Date(); const mm = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
-        const mins = mm.getHours() * 60 + mm.getMinutes();
+        const mins = mmDate.getHours() * 60 + mmDate.getMinutes();
         const isClosed = (mins >= 710 && mins < 735) || (mins >= 950 || mins < 480);
         if (isClosed && !isAdmin) return new Response(JSON.stringify({ status: "closed" }));
         
@@ -197,8 +203,7 @@ Deno.serve(async (req) => {
         
         let atomic = kv.atomic().check({ key: uKey, versionstamp: (await kv.get(uKey)).versionstamp }).set(uKey, { ...uData, balance: uData.balance - (nums.length * amt) });
         const batchId = Date.now().toString().slice(-6);
-        const dateStr = mm.toLocaleString("en-US", { day: 'numeric', month: 'short', year: 'numeric' });
-        const timeStr = mm.toLocaleString("en-US", { hour: 'numeric', minute: 'numeric', hour12: true });
+        const timeStr = mmDate.toLocaleString("en-US", { hour: 'numeric', minute: 'numeric', hour12: true });
 
         for (const n of nums) {
             const betId = Date.now().toString() + Math.random().toString().slice(2,5);
@@ -209,7 +214,6 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ status: "success", voucher: { id: batchId, user: currentUser, date: dateStr, time: timeStr, nums, amt, total: nums.length * amt } }));
       }
 
-      // ADMIN ACTIONS
       if (isAdmin) {
         const f = await req.formData();
         if (url.pathname === "/admin/topup") { const u=f.get("username")?.toString().trim(); const a=parseInt(f.get("amount")?.toString()||"0"); if(u&&a){ const r=await kv.get(["users", u]); if(r.value){ await kv.set(["users", u], {...r.value as any, balance: (r.value as any).balance+a}); await kv.set(["transactions", Date.now().toString()], {user:u, amount:a, type:"TOPUP", time:new Date().toLocaleString("en-US", {timeZone:"Asia/Yangon"})}); return new Response(JSON.stringify({status:"success"})); } } return new Response(JSON.stringify({status:"error"})); }
@@ -219,11 +223,8 @@ Deno.serve(async (req) => {
         if (url.pathname === "/admin/reset_pass") { const u=f.get("username")?.toString(); const p=f.get("password")?.toString(); if(u&&p){ const r=await kv.get(["users",u]); if(r.value){ const s=generateId(); const h=await hashPassword(p,s); await kv.set(["users",u], {...r.value as any, passwordHash:h, salt:s}); return new Response(JSON.stringify({status:"success"})); } } return new Response(JSON.stringify({status:"error"})); }
         if (url.pathname === "/admin/add_history") { const d=f.get("date")?.toString(); const m=f.get("morning")?.toString(); const e=f.get("evening")?.toString(); if(d) await kv.set(["history",d], {date:d, morning:m, evening:e}); return new Response(JSON.stringify({status:"success"})); }
         if (url.pathname === "/admin/delete_bet") { const id=f.get("id")?.toString(); if(id) await kv.delete(["bets",id]); return new Response(JSON.stringify({status:"success"})); }
-        // FIXED: Clear Today History
         if (url.pathname === "/admin/clear_today_history") {
-             const now = new Date(); const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
-             const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
-             await kv.delete(["history", dateKey]);
+             await kv.delete(["history", SERVER_TODAY_KEY]);
              return new Response(JSON.stringify({status:"success"}));
         }
       }
@@ -254,7 +255,7 @@ Deno.serve(async (req) => {
       const avatar = uData.avatar || "";
       const txs = []; for await (const e of kv.list({prefix:["transactions"]}, {reverse:true, limit:50})) { if(e.value.user===currentUser) { const t = e.value; t.id=e.key[1]; txs.push(t); } }
       const contact = (await kv.get(["system", "contact"])).value as any || {};
-      let todayWin = 0, todayLose = 0; const dateStr = new Date().toLocaleString("en-US", {timeZone:"Asia/Yangon", day:'numeric', month:'short', year:'numeric'});
+      let todayWin = 0, todayLose = 0;
       for await (const e of kv.list({ prefix: ["bets"] })) { const b = e.value as any; if(b.user === currentUser && b.date === dateStr) { if(b.status === 'WIN') todayWin += (b.winAmount || 0); if(b.status === 'LOSE') todayLose += b.amount; } }
       return new Response(`<!DOCTYPE html><html><head><title>Profile</title>${commonHead}</head><body>${loaderHTML}${navHTML}<div class="p-6 max-w-md mx-auto space-y-4 pb-24"><div class="glass p-6 rounded-3xl text-center relative mt-4"><div class="relative w-24 h-24 mx-auto mb-3"><div class="w-24 h-24 rounded-full border-4 border-yellow-500 overflow-hidden relative bg-slate-800 flex items-center justify-center">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-gray-500"></i>`}</div><button onclick="document.getElementById('fIn').click()" class="absolute bottom-0 right-0 bg-white text-black rounded-full p-2 border-2 border-slate-900"><i class="fas fa-camera text-xs"></i></button><input type="file" id="fIn" hidden accept="image/*" onchange="upAv(this)"></div><h1 class="text-xl font-bold text-white uppercase">${escapeHtml(currentUser)}</h1><div class="text-yellow-500 font-mono font-bold text-lg">${balance.toLocaleString()} Ks</div></div><div class="grid grid-cols-2 gap-2 text-center"><div class="glass p-3 rounded-xl border-l-2 border-green-500"><div class="text-xs text-gray-400">ဒီနေ့ နိုင်ငွေ</div><div class="font-bold text-green-400 text-sm">+${todayWin.toLocaleString()}</div></div><div class="glass p-3 rounded-xl border-l-2 border-red-500"><div class="text-xs text-gray-400">ဒီနေ့ ရှုံးငွေ</div><div class="font-bold text-red-400 text-sm">-${todayLose.toLocaleString()}</div></div></div><div class="glass p-4 rounded-xl space-y-3"><h3 class="text-xs font-bold text-gray-400 uppercase">Admin ထံဆက်သွယ်ရန်</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-900/40 p-2 rounded border border-blue-500/30 text-center"><div class="text-blue-400 text-xs">KPay</div><div class="font-bold select-all text-sm">${contact.kpay_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.kpay_name||''}</div></div><div class="bg-yellow-900/40 p-2 rounded border border-yellow-500/30 text-center"><div class="text-yellow-400 text-xs">Wave</div><div class="font-bold select-all text-sm">${contact.wave_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.wave_name||''}</div></div></div><a href="${contact.tele_link||'#'}" target="_blank" class="block w-full bg-blue-600 text-white text-center py-2 rounded font-bold"><i class="fab fa-telegram"></i> Telegram Channel</a></div><form action="/change_password" method="POST" class="glass p-4 rounded-xl flex gap-2" onsubmit="showLoad()"><input type="password" name="new_password" placeholder="စကားဝှက်အသစ်" class="input-dark text-sm" required><button class="bg-yellow-600 text-white px-4 rounded font-bold text-xs whitespace-nowrap">ချိန်းမည်</button></form><div class="glass rounded-xl p-4"><h3 class="text-xs font-bold text-gray-400 uppercase mb-3">ငွေဖြည့်မှတ်တမ်း</h3><div class="space-y-2 h-48 overflow-y-auto">${txs.length?txs.map(t=>`<div class="flex justify-between items-center p-2 bg-slate-800 rounded border-l-2 border-green-500" onclick="showTx('${t.time}', '${t.amount}', '${t.type}')"><div><span class="text-xs text-gray-400 block">${t.time}</span><span class="text-[10px] text-blue-400 font-bold">Admin Top-up</span></div><div class="flex items-center gap-2"><span class="font-bold text-green-400">+${t.amount}</span><button onclick="delTx(event, '${t.id}')" class="text-gray-600 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button></div></div>`).join(''):'<div class="text-center text-xs text-gray-500">မှတ်တမ်း မရှိပါ</div>'}</div></div><button onclick="doLogout()" class="block w-full text-center text-red-400 text-sm font-bold py-4">အကောင့်ထွက်မည် (LOGOUT)</button></div><script>function upAv(i){if(i.files&&i.files[0]){const r=new FileReader();r.onload=function(e){const im=new Image();im.src=e.target.result;im.onload=function(){const c=document.createElement('canvas');const x=c.getContext('2d');c.width=150;c.height=150;x.drawImage(im,0,0,150,150);showLoad();const fd=new FormData();fd.append('avatar',c.toDataURL('image/jpeg',0.7));fetch('/update_avatar',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{hideLoad();location.reload();});}};r.readAsDataURL(i.files[0]);}}const u=new URLSearchParams(location.search);if(u.get('msg')==='pass_ok')Swal.fire({icon:'success',title:'အောင်မြင်သည်',text:'စကားဝှက်ပြောင်းလဲပြီးပါပြီ',background:'#1e293b',color:'#fff'});function showTx(t,a,type){Swal.fire({title:'ငွေဖြည့်မှတ်တမ်း',html:\`<div class="text-left">အမျိုးအစား: <b>\${type}</b><br>ပမာဏ: <b class="text-green-400">\${a} Ks</b><br>အချိန်: \${t}</div>\`,background:'#1e293b',color:'#fff'});}function delTx(e,id){e.stopPropagation();Swal.fire({title:'မှတ်တမ်းဖျက်မလား?',icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'ဖျက်မည်',cancelButtonText:'မလုပ်တော့ပါ',background:'#1e293b',color:'#fff'}).then(r=>{if(r.isConfirmed){const fd=new FormData();fd.append('id',id);fetch('/delete_transaction',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{if(d.status==='ok')location.reload();});}});}</script></body></html>`, { headers: {"content-type": "text/html"} });
   }
@@ -266,7 +267,6 @@ Deno.serve(async (req) => {
 
   if (url.pathname === "/") {
       const avatar = uData.avatar || "";
-      const dateStr = new Date().toLocaleString("en-US", {timeZone:"Asia/Yangon", day:'numeric', month:'short', year:'numeric'});
       const sys = { rate: (await kv.get(["system", "rate"])).value || 80, tip: (await kv.get(["system", "tip"])).value || "" };
       const bets = []; const bIter = kv.list({ prefix: ["bets"] }, { reverse: true, limit: isAdmin ? 100 : 50 });
       for await (const e of bIter) { const val = e.value as any; val.id = e.key[1]; if (isAdmin || val.user === currentUser) bets.push(val); }
@@ -283,7 +283,6 @@ Deno.serve(async (req) => {
         <div class="pt-20 px-4 pb-24 max-w-md mx-auto space-y-6">
             <div class="glass rounded-3xl p-6 text-center relative overflow-hidden group"><div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-500 to-transparent opacity-50"></div><div class="flex justify-between text-xs text-gray-400 mb-2 font-mono"><span id="live_date">--</span><span class="text-red-500 animate-pulse font-bold">● LIVE</span></div><div class="py-2"><div id="live_twod" class="text-7xl font-bold gold-text font-mono drop-shadow-lg tracking-tighter blink-live">--</div><div class="text-xs text-gray-500 mt-2 font-mono">Updated: <span id="live_time">--:--:--</span></div></div>
             
-            <!-- 4 Times Results Grid -->
             <div class="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5">
                 <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">09:30 AM</div><div class="font-bold text-lg text-yellow-500" id="res_930">--</div></div>
                 <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">12:01 PM</div><div class="font-bold text-lg text-white" id="res_12">--</div></div>
@@ -303,47 +302,60 @@ Deno.serve(async (req) => {
         <script>
             const API = "https://api.thaistock2d.com/live";
             let lastM = "--"; let lastE = "--"; let firstLoad = true;
+            
+            // 1. Use Server's Today Key directly
+            const SERVER_TODAY = "${SERVER_TODAY_KEY}"; // From Deno
+            
             let rollTimer = null; const liveEl = document.getElementById('live_twod');
             function startRolling() { if (rollTimer) return; liveEl.classList.add('text-yellow-400'); rollTimer = setInterval(() => { const rnd = Math.floor(Math.random() * 100).toString().padStart(2, '0'); liveEl.innerText = rnd; }, 80); }
             function stopRolling(finalNum) { if (rollTimer) { clearInterval(rollTimer); rollTimer = null; } liveEl.classList.remove('text-yellow-400'); liveEl.innerText = finalNum; }
+            
             async function upL(){
                 try {
-                    // 1. Calculate Today's Date (in Yangon Time) correctly
-                    const now = new Date(); 
-                    const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
-                    const todayKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
-
-                    // 2. Check Live Rolling Time
-                    const mins = mmDate.getHours() * 60 + mmDate.getMinutes(); 
+                    // Rolling Animation Logic (Client Time is OK for animation trigger)
+                    const now = new Date(); const mins = now.getHours() * 60 + now.getMinutes(); 
                     const isLiveTime = (mins >= 570 && mins <= 721) || (mins >= 840 && mins <= 990);
                     if(isLiveTime && !rollTimer) startRolling();
 
-                    // 3. Fetch Data
+                    // Fetch Data
                     const r = await fetch(API); const d = await r.json();
                     
-                    // --- CRITICAL FIX: Check Date ---
-                    // If API date does NOT match today's date, DO NOT show it.
-                    if (d.live && d.live.date !== todayKey) {
+                    // --- STRICT DATE CHECK ---
+                    // If API date != Server Today Date, Hide everything & Return
+                    if (d.live && d.live.date !== SERVER_TODAY) {
                         stopRolling("--");
                         document.getElementById('res_930').innerText = "--";
                         document.getElementById('res_12').innerText = "--";
                         document.getElementById('res_200').innerText = "--";
                         document.getElementById('res_430').innerText = "--";
                         liveEl.classList.remove('blink-live');
-                        document.getElementById('live_date').innerText = todayKey; // Show today's date
-                        return; // Stop processing
+                        // Show date but make it clear it's waiting
+                        document.getElementById('live_date').innerText = SERVER_TODAY; 
+                        return; 
                     }
 
-                    // 4. Process Live Data (Only if date matches)
+                    // If date matches, proceed
                     if(d.live) {
                         if (d.live.status === '1') { startRolling(); liveEl.classList.add('blink-live'); } else { stopRolling(d.live.twod || "--"); liveEl.classList.remove('blink-live'); }
-                        document.getElementById('live_time').innerText = d.live.time || "--:--:--"; document.getElementById('live_date').innerText = d.live.date || "Today";
+                        document.getElementById('live_time').innerText = d.live.time || "--:--:--"; 
+                        document.getElementById('live_date').innerText = d.live.date;
                     }
                     if(d.result){
-                        const h = mmDate.getHours();
-                        const r930 = d.result[0]?.twod || "--"; const r12 = d.result[1]?.twod || "--"; const r200 = d.result[2]?.twod || "--"; let r430 = (d.result[3] || d.result[2])?.twod || "--";
+                        // We use the data directly since date is verified
+                        const r930 = d.result[0]?.twod || "--"; 
+                        const r12 = d.result[1]?.twod || "--"; 
+                        const r200 = d.result[2]?.twod || "--"; 
+                        let r430 = (d.result[3] || d.result[2])?.twod || "--";
+                        
+                        // Safety: hide 4:30 result if too early (prevents 00 bug)
+                        const h = new Date().getHours();
                         if(h < 16 && r430 === "00") r430 = "--";
-                        document.getElementById('res_930').innerText = r930; document.getElementById('res_12').innerText = r12; document.getElementById('res_200').innerText = r200; document.getElementById('res_430').innerText = r430;
+                        
+                        document.getElementById('res_930').innerText = r930; 
+                        document.getElementById('res_12').innerText = r12; 
+                        document.getElementById('res_200').innerText = r200; 
+                        document.getElementById('res_430').innerText = r430;
+                        
                         if(!firstLoad) {
                             if(lastM === "--" && r12 !== "--") { stopRolling(r12); Swal.fire({title:'မနက်ပိုင်း ဂဏန်းထွက်ပါပြီ!', text: r12, icon:'success', confirmButtonColor: '#eab308'}); }
                             if(lastE === "--" && r430 !== "--") { stopRolling(r430); Swal.fire({title:'ညနေပိုင်း ဂဏန်းထွက်ပါပြီ!', text: r430, icon:'success', confirmButtonColor: '#eab308'}); }
