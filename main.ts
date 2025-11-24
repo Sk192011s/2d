@@ -1,5 +1,4 @@
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
+import { crypto } from "https://deno.land/std@0.208.0/crypto/mod.ts";
 
 const kv = await Deno.openKv();
 
@@ -10,16 +9,48 @@ async function hashPassword(p: string, s: string) {
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 function generateId() { return crypto.randomUUID(); }
+function escapeHtml(unsafe: string) {
+    return unsafe
+         .replace(/&/g, "&amp;")
+         .replace(/</g, "&lt;")
+         .replace(/>/g, "&gt;")
+         .replace(/"/g, "&quot;")
+         .replace(/'/g, "&#039;");
+}
 
-// --- CRON JOB (AUTO SAVE & FIX 00) ---
+// --- AUTO CREATE ADMIN ACCOUNT ON STARTUP ---
+// Admin အကောင့်မရှိရင် (admin/admin123) ဖြင့် အလိုအလျောက်ဆောက်မည်
+const adminCheck = await kv.get(["users", "admin"]);
+if (!adminCheck.value) {
+    const s = generateId();
+    const h = await hashPassword("admin123", s);
+    await kv.set(["users", "admin"], { 
+        passwordHash: h, 
+        salt: s, 
+        balance: 1000000, // Admin စမ်းဖို့ ငွေ ၁၀သိန်းထည့်ထားပေးသည်
+        joined: new Date().toISOString(),
+        avatar: "https://img.icons8.com/color/96/admin-settings-male.png"
+    });
+    console.log(">> Admin Account Created!");
+    console.log(">> User: admin");
+    console.log(">> Pass: admin123");
+}
+
+// --- CRON JOB (AUTO SAVE & FIX DATE BUG) ---
 Deno.cron("Save History", "*/2 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
     const data = await res.json();
     const now = new Date();
+    // Use proper timezone handling
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
     
+    // --- FIX: Check if API date matches System Date ---
+    // API ကရက်စွဲနဲ့ ဒီနေ့ရက်စွဲ မတူရင် (ဈေးမဖွင့်သေးရင်) save မလုပ်ပါ
+    if (!data.live || data.live.date !== dateKey) return;
+
+    // Sunday (0) or Saturday (6) - Market Closed
     if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
 
     const curHour = mmDate.getHours();
@@ -41,16 +72,18 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     let needSave = false;
 
     if (m !== "--" && m !== old.morning) { saveM = m; needSave = true; }
+    // Fix 00 bug if fetched early
     if (old.evening === "00" && curHour < 16) { saveE = "--"; needSave = true; } 
     else if (e !== "--" && e !== old.evening) { saveE = e; needSave = true; }
 
     if (needSave) {
         await kv.set(["history", dateKey], { morning: saveM, evening: saveE, date: dateKey });
     }
-  } catch (e) {}
+  } catch (e) { /* Ignore fetch errors */ }
 });
 
-serve(async (req) => {
+// --- MAIN SERVER ---
+Deno.serve(async (req) => {
   const url = new URL(req.url);
 
   // --- PWA & ASSETS ---
@@ -92,6 +125,8 @@ serve(async (req) => {
     .nav-item.active i { transform: translateY(-5px); transition: 0.3s; }
     .blink-live { animation: blinker 1.5s linear infinite; }
     @keyframes blinker { 50% { opacity: 0.3; } }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
   <script>
     if ('serviceWorker' in navigator) { window.addEventListener('load', ()=>navigator.serviceWorker.register('/sw.js')); }
@@ -108,7 +143,6 @@ serve(async (req) => {
             } else Swal.fire({icon:'error', title:'Failed'});
         } catch(e) { hideLoad(); Swal.fire({icon:'error', title:'Error'}); }
     }
-    function delBet(id) { Swal.fire({title:'ဖျက်မလား?', icon:'warning', showCancelButton:true, confirmButtonColor:'#d33', confirmButtonText:'ဖျက်မည်', cancelButtonText:'မလုပ်တော့ပါ'}).then(r => { if(r.isConfirmed) { showLoad(); const fd = new FormData(); fd.append('id', id); fetch('/admin/delete_bet', {method:'POST', body:fd}).then(res=>res.json()).then(d=>{ hideLoad(); location.reload(); }); } }); }
   </script>`;
 
   const loaderHTML = `<div id="loader" class="fixed inset-0 bg-black/90 z-[9999] hidden flex items-center justify-center"><div class="loader w-10 h-10"></div></div>`;
@@ -132,12 +166,18 @@ serve(async (req) => {
         const u = form.get("username")?.toString().trim(); 
         const p = form.get("password")?.toString();
         const remember = form.get("remember");
+        
+        // SECURITY: Block admin registration
+        if (u?.toLowerCase() === "admin") return Response.redirect(url.origin + "/?error=forbidden");
+
         if (!u || !p) return Response.redirect(url.origin + "/?error=missing");
         const check = await kv.get(["users", u]);
         if (check.value) return Response.redirect(url.origin + "/?error=exists");
+        
         const salt = generateId();
         const hash = await hashPassword(p, salt);
         await kv.set(["users", u], { passwordHash: hash, salt, balance: 0, joined: new Date().toISOString() });
+        
         const h = new Headers({ "Location": "/" });
         let cookieStr = `user=${encodeURIComponent(u)}; Path=/; HttpOnly; SameSite=Lax`;
         if(remember) cookieStr += "; Max-Age=1296000"; 
@@ -180,7 +220,7 @@ serve(async (req) => {
         <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoad()"><div class="space-y-4"><div class="relative"><i class="fas fa-user-plus absolute left-3 top-3.5 text-gray-500"></i><input name="username" placeholder="အမည်အသစ်ပေးပါ" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><div class="relative"><i class="fas fa-key absolute left-3 top-3.5 text-gray-500"></i><input name="password" type="password" placeholder="စကားဝှက်အသစ်ပေးပါ" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><label class="flex items-center text-xs text-gray-400"><input type="checkbox" name="remember" class="mr-2" checked> မှတ်သားထားမည် (၁၅ ရက်)</label><button class="w-full py-3 rounded-xl bg-slate-700 text-white font-bold hover:bg-slate-600">အကောင့်ဖွင့်မည်</button></div></form>
       </div>
     </div>
-    <script> function switchTab(t) { const l=document.getElementById('loginForm'),r=document.getElementById('regForm'),tl=document.getElementById('tabLogin'),tr=document.getElementById('tabReg'); if(t==='login'){l.classList.remove('hidden');r.classList.add('hidden');tl.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tr.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";}else{l.classList.add('hidden');r.classList.remove('hidden');tr.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tl.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";} } const u=new URLSearchParams(location.search); if(u.get('error')) Swal.fire({icon:'error',title:'မှားယွင်းနေသည်',text:'အမည် သို့မဟုတ် စကားဝှက် မှားယွင်းနေပါသည်',background:'#1e293b',color:'#fff'}); </script></body></html>`, { headers: { "content-type": "text/html" } });
+    <script> function switchTab(t) { const l=document.getElementById('loginForm'),r=document.getElementById('regForm'),tl=document.getElementById('tabLogin'),tr=document.getElementById('tabReg'); if(t==='login'){l.classList.remove('hidden');r.classList.add('hidden');tl.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tr.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";}else{l.classList.add('hidden');r.classList.remove('hidden');tr.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tl.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";} } const u=new URLSearchParams(location.search); if(u.get('error')==='forbidden') Swal.fire({icon:'error',title:'မရနိုင်ပါ',text:'Admin အမည်ဖြင့် ဖွင့်ခွင့်မရှိပါ'}); else if(u.get('error')) Swal.fire({icon:'error',title:'မှားယွင်းနေသည်',text:'အမည် သို့မဟုတ် စကားဝှက် မှားယွင်းနေပါသည်',background:'#1e293b',color:'#fff'}); </script></body></html>`, { headers: { "content-type": "text/html" } });
   }
 
   // --- AUTHENTICATED ACTIONS (POST) ---
@@ -209,8 +249,10 @@ serve(async (req) => {
         const mmString = now.toLocaleString("en-US", { timeZone: "Asia/Yangon", hour12: false });
         const [h, m] = mmString.split(", ")[1].split(":").map(Number);
         const mins = h * 60 + m;
+        // Close during 11:50-12:15 and 03:50-Next Morning
         const isClosed = (mins >= 710 && mins < 735) || (mins >= 950 || mins < 480);
-        if (isClosed) return new Response(JSON.stringify({ status: "closed" }));
+        if (isClosed && !isAdmin) return new Response(JSON.stringify({ status: "closed" }));
+        
         const form = await req.formData();
         const nums = (form.get("number")?.toString() || "").split(",").map(n=>n.trim()).filter(n=>n);
         const amt = parseInt(form.get("amount")?.toString() || "0");
@@ -304,7 +346,7 @@ serve(async (req) => {
                 <div class="w-24 h-24 rounded-full border-4 border-yellow-500 overflow-hidden relative bg-slate-800 flex items-center justify-center">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-gray-500"></i>`}</div>
                 <button onclick="document.getElementById('fIn').click()" class="absolute bottom-0 right-0 bg-white text-black rounded-full p-2 border-2 border-slate-900"><i class="fas fa-camera text-xs"></i></button><input type="file" id="fIn" hidden accept="image/*" onchange="upAv(this)">
             </div>
-            <h1 class="text-xl font-bold text-white uppercase">${currentUser}</h1>
+            <h1 class="text-xl font-bold text-white uppercase">${escapeHtml(currentUser)}</h1>
             <div class="text-yellow-500 font-mono font-bold text-lg">${balance.toLocaleString()} Ks</div>
          </div>
          <div class="grid grid-cols-2 gap-2 text-center">
@@ -378,7 +420,7 @@ serve(async (req) => {
             <div class="glass rounded-xl p-4"><div class="flex justify-between items-center mb-3"><h3 class="font-bold text-gray-300 text-sm">ထိုးထားသော စာရင်းများ</h3><div class="flex gap-2"><input id="searchBet" onkeyup="filterBets()" placeholder="ဂဏန်းရှာရန်..." class="bg-black/30 border border-gray-600 text-white text-xs rounded px-2 py-1 w-24 focus:outline-none focus:border-yellow-500">${!isAdmin?`<button onclick="clrH()" class="text-xs text-red-400 px-1"><i class="fas fa-trash"></i></button>`:''}</div></div><div class="space-y-2 max-h-60 overflow-y-auto pr-1" id="betListContainer">${bets.length === 0 ? '<div class="text-center text-gray-500 text-xs py-4">မှတ်တမ်း မရှိပါ</div>' : ''}${bets.map(b => `<div class="bet-item flex justify-between items-center p-3 rounded-lg bg-black/20 border-l-2 ${b.status==='WIN'?'border-green-500':b.status==='LOSE'?'border-red-500':'border-yellow-500'}" data-num="${b.number}" data-id="${b.id}" data-date="${b.date}" data-status="${b.status}" data-win="${b.winAmount||0}" data-user="${b.user}"><div><div class="font-mono font-bold text-lg ${b.status==='WIN'?'text-green-400':b.status==='LOSE'?'text-red-400':'text-white'}">${b.number}</div><div class="text-[10px] text-gray-500">${b.time}</div></div><div class="flex items-center gap-2"><div class="text-right"><div class="font-mono text-sm font-bold">${b.amount.toLocaleString()}</div><div class="text-[10px] font-bold ${b.status==='WIN'?'text-green-500':b.status==='LOSE'?'text-red-500':'text-yellow-500'}">${b.status}</div></div>${isAdmin?`<button onclick="delBet('${b.id}')" class="text-red-500 text-xs bg-red-500/10 p-2 rounded hover:bg-red-500 hover:text-white"><i class="fas fa-trash"></i></button>`:''}</div></div>`).join('')}</div></div>
         </div>
         ${navHTML}
-        <div id="betModal" class="fixed inset-0 z-[100] hidden"><div class="absolute inset-0 bg-black/80 backdrop-blur-sm" onclick="document.getElementById('betModal').classList.add('hidden')"></div><div class="absolute bottom-0 w-full bg-[#1e293b] rounded-t-3xl p-6 slide-up shadow-2xl border-t border-yellow-500/30"><div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-white">ထိုးမည့်ဂဏန်းရွေးပါ</h2><button onclick="document.getElementById('betModal').classList.add('hidden')" class="text-gray-400 text-2xl">&times;</button></div><div class="flex gap-2 mb-4 overflow-x-auto pb-2 no-scrollbar"><button onclick="setMode('direct')" class="px-4 py-1 bg-yellow-500 text-black text-xs font-bold rounded-full whitespace-nowrap">တိုက်ရိုက်</button><button onclick="quickInput('brake')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ဘရိတ်</button><button onclick="quickInput('round')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">အခွေ</button><button onclick="quickInput('head')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ထိပ်စီး</button><button onclick="quickInput('tail')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">နောက်ပိတ်</button></div><form onsubmit="confirmBet(event)"><div class="bg-black/30 p-3 rounded-xl border border-white/5 mb-4"><textarea id="betNums" name="number" class="w-full bg-transparent text-lg font-mono font-bold text-white placeholder-gray-600 focus:outline-none resize-none h-20" placeholder="12, 34, 56..."></textarea></div><div class="mb-6"><label class="text-xs text-gray-400 uppercase font-bold">ငွေပမာဏ (အနည်းဆုံး ၅၀ ကျပ်)</label><input type="number" name="amount" id="betAmt" class="w-full p-3 bg-black/30 text-white font-bold focus:outline-none rounded-xl mt-2 border border-white/5" placeholder="50" required></div><button class="w-full py-4 rounded-xl gold-bg text-black font-bold text-lg">ထိုးမည် (CONFIRM)</button></form></div></div>
+        <div id="betModal" class="fixed inset-0 z-[100] hidden"><div class="absolute inset-0 bg-black/80 backdrop-blur-sm" onclick="document.getElementById('betModal').classList.add('hidden')"></div><div class="absolute bottom-0 w-full bg-[#1e293b] rounded-t-3xl p-6 slide-up shadow-2xl border-t border-yellow-500/30"><div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-white">ထိုးမည့်ဂဏန်းရွေးပါ</h2><button onclick="document.getElementById('betModal').classList.add('hidden')" class="text-gray-400 text-2xl">&times;</button></div><div class="flex gap-2 mb-4 overflow-x-auto pb-2 no-scrollbar"><button onclick="setMode('direct')" class="px-4 py-1 bg-yellow-500 text-black text-xs font-bold rounded-full whitespace-nowrap">တိုက်ရိုက်</button><button onclick="quickInput('double')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">အပူး</button><button onclick="quickInput('brother')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ညီအစ်ကို</button><button onclick="quickInput('power')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ပါဝါ</button><button onclick="quickInput('head')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ထိပ်</button><button onclick="quickInput('tail')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">နောက်</button></div><form onsubmit="confirmBet(event)"><div class="bg-black/30 p-3 rounded-xl border border-white/5 mb-4"><textarea id="betNums" name="number" class="w-full bg-transparent text-lg font-mono font-bold text-white placeholder-gray-600 focus:outline-none resize-none h-20" placeholder="12, 34, 56..."></textarea></div><div class="mb-6"><label class="text-xs text-gray-400 uppercase font-bold">ငွေပမာဏ (အနည်းဆုံး ၅၀ ကျပ်)</label><input type="number" name="amount" id="betAmt" class="w-full p-3 bg-black/30 text-white font-bold focus:outline-none rounded-xl mt-2 border border-white/5" placeholder="50" required></div><button class="w-full py-4 rounded-xl gold-bg text-black font-bold text-lg">ထိုးမည် (CONFIRM)</button></form></div></div>
         <div id="voucherModal" class="fixed inset-0 z-[110] hidden flex items-center justify-center p-6"><div class="absolute inset-0 bg-black/90" onclick="closeVoucher()"></div><div class="relative w-full max-w-xs bg-white text-slate-900 rounded-lg overflow-hidden shadow-2xl slide-up"><div id="voucherCapture" class="bg-white"><div class="bg-slate-900 text-white p-3 text-center font-bold uppercase text-sm border-b-4 border-yellow-500">အောင်မြင်ပါသည်</div><div class="p-4 font-mono text-sm" id="voucherContent"></div></div><div class="p-3 bg-gray-100 text-center flex gap-2"><button onclick="saveVoucher()" class="flex-1 bg-blue-600 text-white text-xs font-bold py-2 rounded shadow">ဘောင်ချာသိမ်းမည်</button><button onclick="closeVoucher()" class="flex-1 text-xs font-bold text-slate-500 uppercase tracking-wide border border-slate-300 rounded py-2">ပိတ်မည်</button></div></div></div>
         <script>
             const API="https://api.thaistock2d.com/live";
@@ -401,10 +443,8 @@ serve(async (req) => {
                     if(h < 16 && newE === "00") newE = "--";
                     document.getElementById('res_12').innerText = newM;
                     document.getElementById('res_430').innerText = newE;
-                    
                     if(h === 12 && newM === d.live.twod) shouldBlink = false;
                     if(h >= 16 && newE === d.live.twod) shouldBlink = false;
-
                     if(!firstLoad) {
                         if(lastM === "--" && newM !== "--") Swal.fire({title:'မနက်ပိုင်း ဂဏန်းထွက်ပါပြီ!', text: newM, icon:'info', confirmButtonColor: '#eab308'});
                         if(lastE === "--" && newE !== "--") Swal.fire({title:'ညနေပိုင်း ဂဏန်းထွက်ပါပြီ!', text: newE, icon:'info', confirmButtonColor: '#eab308'});
@@ -416,14 +456,24 @@ serve(async (req) => {
             function filterBets() { const v = document.getElementById('searchBet').value.trim(); document.querySelectorAll('.bet-item').forEach(i => { i.style.display = i.getAttribute('data-num').includes(v) ? 'flex' : 'none'; }); }
             function closeVoucher() { showLoad(); setTimeout(() => location.reload(), 100); }
             function openBet(){document.getElementById('betModal').classList.remove('hidden');}
-            function quickInput(m){Swal.fire({title:m.toUpperCase(),input:'number',background:'#1e293b',color:'#fff',confirmButtonColor:'#eab308'}).then(r=>{if(r.isConfirmed&&r.value){const v=r.value;let a=[];if(m==='round')for(let i=0;i<10;i++)a.push(i+""+i);if(m==='head')for(let i=0;i<10;i++)a.push(v+i);if(m==='tail')for(let i=0;i<10;i++)a.push(i+v);if(m==='brake'){if(v.length===2)a=v[0]===v[1]?[v]:[v,v[1]+v[0]];}const t=document.getElementById('betNums');let c=t.value.trim();if(c&&!c.endsWith(','))c+=',';t.value=c+a.join(',');}});}
+            function quickInput(m){
+                if(['double','brother','power'].includes(m)){
+                    let a=[];
+                    if(m==='double') for(let i=0;i<10;i++) a.push(i+""+i);
+                    if(m==='brother') ['01','12','23','34','45','56','67','78','89','90'].forEach(x=>{a.push(x);a.push(x[1]+x[0])});
+                    if(m==='power') ['05','16','27','38','49'].forEach(x=>{a.push(x);a.push(x[1]+x[0])});
+                    const t=document.getElementById('betNums'); let c=t.value.trim(); if(c&&!c.endsWith(','))c+=','; t.value=c+a.join(',');
+                } else {
+                    Swal.fire({title:m==='head'?'ထိပ်စီး':m==='tail'?'နောက်ပိတ်':'',input:'number',background:'#1e293b',color:'#fff',confirmButtonColor:'#eab308'}).then(r=>{if(r.isConfirmed&&r.value){const v=r.value;let a=[];if(m==='head')for(let i=0;i<10;i++)a.push(v+i);if(m==='tail')for(let i=0;i<10;i++)a.push(i+v);const t=document.getElementById('betNums');let c=t.value.trim();if(c&&!c.endsWith(','))c+=',';t.value=c+a.join(',');}});
+                }
+            }
             function confirmBet(e) { e.preventDefault(); const n = document.getElementById('betNums').value; const a = document.getElementById('betAmt').value; const count = n.split(',').filter(x=>x.trim()).length; const total = count * parseInt(a); Swal.fire({title: 'အတည်ပြုပါ', html: \`အရေအတွက်: <b>\${count}</b><br>နှုန်း: <b>\${a}</b><br>စုစုပေါင်း: <b class="text-yellow-400">\${total.toLocaleString()} Ks</b>\`, icon: 'question', showCancelButton: true, confirmButtonText: 'ထိုးမည်', cancelButtonText:'မလုပ်တော့ပါ', confirmButtonColor: '#eab308', background: '#1e293b', color: '#fff'}).then((result) => { if (result.isConfirmed) { submitBetData(e.target); } }); }
             async function submitBetData(form) { showLoad(); const fd=new FormData(form); try { const r=await fetch('/bet',{method:'POST',body:fd}); const d=await r.json(); hideLoad(); if(d.status==='success'){ document.getElementById('betModal').classList.add('hidden'); const v=d.voucher; document.getElementById('voucherContent').innerHTML=\`<div class="text-center mb-2"><div class="font-bold">\${v.user}</div><div class="text-xs text-gray-500">\${v.time}</div></div><div class="border-y border-dashed border-gray-300 py-2 my-2 space-y-1 max-h-40 overflow-y-auto">\${v.nums.map(n=>\`<div class="flex justify-between"><span>\${n}</span><span>\${v.amt}</span></div>\`).join('')}</div><div class="flex justify-between font-bold text-lg"><span>စုစုပေါင်း</span><span>\${v.total}</span></div><div class="text-center text-xs font-bold text-yellow-600 mt-2">ကံကောင်းပါစေ (Good Luck)</div>\`; document.getElementById('voucherModal').classList.remove('hidden'); } else if(d.status==='no_balance') Swal.fire('Error','လက်ကျန်ငွေမလုံလောက်ပါ','error'); else Swal.fire('Error',d.status,'error'); } catch(e){ hideLoad(); } }
             function saveVoucher() { const el = document.getElementById('voucherCapture'); html2canvas(el).then(canvas => { const link = document.createElement('a'); link.download = '2d_voucher_' + Date.now() + '.png'; link.href = canvas.toDataURL(); link.click(); }); }
             function clrH(){ Swal.fire({title:'ရှင်းလင်းမလား?',text:'ပြီးဆုံးပြီးသော မှတ်တမ်းများကိုသာ ဖျက်ပါမည်',icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'ရှင်းမည်',cancelButtonText:'မလုပ်တော့ပါ',background:'#1e293b',color:'#fff'}).then(r=>{if(r.isConfirmed){showLoad();fetch('/clear_history',{method:'POST'}).then(res=>res.json()).then(d=>{hideLoad();Swal.fire({title:'ရှင်းလင်းပြီးပါပြီ!',icon:'success',timer:1500,showConfirmButton:false,background:'#1e293b',color:'#fff'}).then(()=>location.reload());});}}) }
             function delBet(id) { Swal.fire({title:'ဖျက်မလား?', icon:'warning', showCancelButton:true, confirmButtonColor:'#d33', confirmButtonText:'ဖျက်မည်', cancelButtonText:'မလုပ်တော့ပါ', background:'#1e293b', color:'#fff'}).then(r => { if(r.isConfirmed) { showLoad(); const fd = new FormData(); fd.append('id', id); fetch('/admin/delete_bet', {method:'POST', body:fd}).then(res=>res.json()).then(d=>{ hideLoad(); if(d.status==='success') location.reload(); else Swal.fire('Error','Failed','error'); }); } }); }
             window.onload = function() {
-                const today = "${dateStr}"; const currentUser = "${currentUser}"; const bets = document.querySelectorAll('.bet-item'); let totalWin = 0;
+                const today = "${dateStr}"; const currentUser = "${escapeHtml(currentUser)}"; const bets = document.querySelectorAll('.bet-item'); let totalWin = 0;
                 bets.forEach(b => { if(b.dataset.status === "WIN" && b.dataset.date === today && b.dataset.user === currentUser) { const id = b.dataset.id; if(!localStorage.getItem('seen_win_'+id)) { totalWin += parseInt(b.dataset.win); localStorage.setItem('seen_win_'+id, 'true'); } } });
                 if(totalWin > 0) { Swal.fire({ title: 'ဂုဏ်ယူပါတယ်!', text: 'ဒီနေ့အတွက် စုစုပေါင်း ' + totalWin.toLocaleString() + ' ကျပ် ကံထူးထားပါတယ်!', icon: 'success', background: '#1e293b', color: '#fff', confirmButtonColor: '#eab308', backdrop: \`rgba(0,0,123,0.4) url("https://media.tenor.com/Confetti/confetti.gif") left top no-repeat\` }); }
             };
