@@ -35,7 +35,7 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
     
-    // Check Date match to prevent wrong history
+    // Strict Check: Only save if API date matches Today
     if (!data.live || data.live.date !== dateKey) return;
     if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
 
@@ -43,7 +43,6 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     let m = "--", e = "--";
 
     if (data.result) {
-        // Save only Main Closing Times (12:01 & 4:30) to Database
         if (data.result[1] && data.result[1].twod) m = data.result[1].twod;
         if (curHour >= 16) {
             const ev = data.result[3] || data.result[2];
@@ -52,9 +51,11 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     }
 
     const ex = await kv.get(["history", dateKey]);
+    // Only save if we have data and it's not already saved
+    let needSave = false;
     const old = ex.value as any || { morning: "--", evening: "--" };
     
-    let saveM = old.morning; let saveE = old.evening; let needSave = false;
+    let saveM = old.morning; let saveE = old.evening;
     if (m !== "--" && m !== old.morning) { saveM = m; needSave = true; }
     if (old.evening === "00" && curHour < 16) { saveE = "--"; needSave = true; } 
     else if (e !== "--" && e !== old.evening) { saveE = e; needSave = true; }
@@ -140,7 +141,7 @@ Deno.serve(async (req) => {
   const currentUser = userCookie ? decodeURIComponent(userCookie.split("=")[1].trim()) : null;
   const isAdmin = currentUser === "admin";
 
-  // --- LOGOUT ACTION (Fixed 404) ---
+  // --- LOGOUT ACTION ---
   if (url.pathname === "/logout") {
     const h = new Headers({ "Location": "/" });
     h.set("Set-Cookie", `user=; Path=/; Max-Age=0`);
@@ -149,7 +150,6 @@ Deno.serve(async (req) => {
 
   // --- POST ROUTES ---
   if (req.method === "POST") {
-      // 1. Register
       if (url.pathname === "/register") {
         const form = await req.formData(); const u = form.get("username")?.toString().trim(); const p = form.get("password")?.toString(); const remember = form.get("remember");
         if (u?.toLowerCase() === "admin") return Response.redirect(url.origin + "/?error=forbidden");
@@ -160,7 +160,6 @@ Deno.serve(async (req) => {
         const h = new Headers({ "Location": "/" }); h.set("Set-Cookie", `user=${encodeURIComponent(u)}; Path=/; HttpOnly; SameSite=Lax` + (remember ? "; Max-Age=1296000" : ""));
         return new Response(null, { status: 303, headers: h });
       }
-      // 2. Login
       if (url.pathname === "/login") {
         const form = await req.formData(); const u = form.get("username")?.toString().trim(); const p = form.get("password")?.toString(); const remember = form.get("remember");
         const entry = await kv.get(["users", u]); const data = entry.value as any;
@@ -179,7 +178,6 @@ Deno.serve(async (req) => {
       if (url.pathname === "/clear_history") { const iter = kv.list({ prefix: ["bets"] }); for await (const e of iter) { const b = e.value as any; if(b.user === currentUser && b.status !== "PENDING") await kv.delete(e.key); } return new Response(JSON.stringify({status:"ok"})); }
       if (url.pathname === "/delete_transaction") { const f = await req.formData(); const id = f.get("id")?.toString(); if(id) await kv.delete(["transactions", id]); return new Response(JSON.stringify({status:"ok"})); }
       
-      // BETTING
       if (url.pathname === "/bet") {
         const now = new Date(); const mm = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
         const mins = mm.getHours() * 60 + mm.getMinutes();
@@ -209,7 +207,6 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ status: "success", voucher: { id: batchId, user: currentUser, date: dateStr, time: timeStr, nums, amt, total: nums.length * amt } }));
       }
 
-      // ADMIN ACTIONS
       if (isAdmin) {
         const f = await req.formData();
         if (url.pathname === "/admin/topup") { const u=f.get("username")?.toString().trim(); const a=parseInt(f.get("amount")?.toString()||"0"); if(u&&a){ const r=await kv.get(["users", u]); if(r.value){ await kv.set(["users", u], {...r.value as any, balance: (r.value as any).balance+a}); await kv.set(["transactions", Date.now().toString()], {user:u, amount:a, type:"TOPUP", time:new Date().toLocaleString("en-US", {timeZone:"Asia/Yangon"})}); return new Response(JSON.stringify({status:"success"})); } } return new Response(JSON.stringify({status:"error"})); }
@@ -219,7 +216,7 @@ Deno.serve(async (req) => {
         if (url.pathname === "/admin/reset_pass") { const u=f.get("username")?.toString(); const p=f.get("password")?.toString(); if(u&&p){ const r=await kv.get(["users",u]); if(r.value){ const s=generateId(); const h=await hashPassword(p,s); await kv.set(["users",u], {...r.value as any, passwordHash:h, salt:s}); return new Response(JSON.stringify({status:"success"})); } } return new Response(JSON.stringify({status:"error"})); }
         if (url.pathname === "/admin/add_history") { const d=f.get("date")?.toString(); const m=f.get("morning")?.toString(); const e=f.get("evening")?.toString(); if(d) await kv.set(["history",d], {date:d, morning:m, evening:e}); return new Response(JSON.stringify({status:"success"})); }
         if (url.pathname === "/admin/delete_bet") { const id=f.get("id")?.toString(); if(id) await kv.delete(["bets",id]); return new Response(JSON.stringify({status:"success"})); }
-        // Admin: Clear Today's Wrong History
+        // FIXED: Clear Today History
         if (url.pathname === "/admin/clear_today_history") {
              const now = new Date(); const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
              const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
@@ -311,7 +308,20 @@ Deno.serve(async (req) => {
                     const now = new Date(); const mins = now.getHours() * 60 + now.getMinutes(); const isLiveTime = (mins >= 570 && mins <= 721) || (mins >= 840 && mins <= 990);
                     if(isLiveTime && !rollTimer) startRolling();
                     const r = await fetch(API); const d = await r.json();
+                    
+                    // FIX: Check if API Date == Today
+                    const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
+                    const todayKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
+                    
                     if(d.live) {
+                        // If API Date mismatch, reset everything
+                        if (d.live.date !== todayKey) {
+                            stopRolling("--");
+                            document.getElementById('res_930').innerText = "--"; document.getElementById('res_12').innerText = "--";
+                            document.getElementById('res_200').innerText = "--"; document.getElementById('res_430').innerText = "--";
+                            liveEl.classList.remove('blink-live');
+                            return;
+                        }
                         if (d.live.status === '1') { startRolling(); liveEl.classList.add('blink-live'); } else { stopRolling(d.live.twod || "--"); liveEl.classList.remove('blink-live'); }
                         document.getElementById('live_time').innerText = d.live.time || "--:--:--"; document.getElementById('live_date').innerText = d.live.date || "Today";
                     }
