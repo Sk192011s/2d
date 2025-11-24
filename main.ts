@@ -11,8 +11,8 @@ async function hashPassword(p: string, s: string) {
 }
 function generateId() { return crypto.randomUUID(); }
 
-// --- CRON JOB (HISTORY FIX) ---
-Deno.cron("Save History", "*/5 * * * *", async () => {
+// --- CRON JOB (AUTO SAVE & FIX 00) ---
+Deno.cron("Save History", "*/2 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
     const data = await res.json();
@@ -20,43 +20,47 @@ Deno.cron("Save History", "*/5 * * * *", async () => {
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
     
-    // Sunday (0) and Saturday (6) skip
     if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
 
+    const curHour = mmDate.getHours(); // 0-23
     let m = "--", e = "--";
-    const curHour = mmDate.getHours(); // 24-hour format (0-23)
 
     if (data.result) {
-        // Morning Result
         if (data.result[1] && data.result[1].twod) m = data.result[1].twod;
         
-        // Evening Result Logic
-        // ညနေ ၄ နာရီ (16) ကျော်မှသာ ညနေပိုင်း result ကို လက်ခံမယ်
+        // ညနေ ၄ နာရီ (16:00) ကျော်မှသာ ညနေ result ကို ယူမယ်
         if (curHour >= 16) {
             const ev = data.result[3] || data.result[2];
             if (ev && ev.twod) e = ev.twod;
         }
-        // ညနေ ၄ နာရီ မထိုးခင် API က 00 လို့ပို့ရင်လည်း -- ပဲ သတ်မှတ်မယ်
-        if (curHour < 16) {
-            e = "--";
-        }
     }
 
-    // Save to KV if there is data
-    // မနက်ပိုင်းထွက်ပြီး ညနေမထွက်သေးရင်လည်း update လုပ်မယ် (00 အမှားပြင်ဖို့)
-    if (m !== "--" || (e === "--" && curHour < 16)) {
-        const ex = await kv.get(["history", dateKey]);
-        const old = ex.value as any || { morning: "--", evening: "--" };
-        
-        // အကယ်၍ Database ထဲမှာ 00 ဝင်နေပြီး အခုချိန်က ၄နာရီမထိုးသေးရင် -- နဲ့ ပြန် overwrite လုပ်မယ်
-        const finalE = (curHour < 16) ? "--" : (e !== "--" ? e : old.evening);
+    // Database Read & Fix Logic
+    const ex = await kv.get(["history", dateKey]);
+    const old = ex.value as any || { morning: "--", evening: "--" };
+    
+    let saveM = old.morning;
+    let saveE = old.evening;
+    let needSave = false;
 
-        await kv.set(["history", dateKey], { 
-            morning: m !== "--" ? m : old.morning, 
-            evening: finalE, 
-            date: dateKey 
-        });
+    // Morning Update
+    if (m !== "--" && m !== old.morning) { saveM = m; needSave = true; }
+
+    // Evening Update & 00 FIX
+    // အကယ်၍ Database မှာ "00" ဖြစ်နေပြီး၊ အချိန်က ၄ နာရီမထိုးသေးရင် "--" လို့ ပြန်ပြင်မယ်
+    if (old.evening === "00" && curHour < 16) { 
+        saveE = "--"; 
+        needSave = true; 
+    } else if (e !== "--" && e !== old.evening) {
+        // ပုံမှန် Update (အချိန်တန်လို့ ဂဏန်းထွက်လာရင်)
+        saveE = e;
+        needSave = true;
     }
+
+    if (needSave) {
+        await kv.set(["history", dateKey], { morning: saveM, evening: saveE, date: dateKey });
+    }
+
   } catch (e) {}
 });
 
@@ -100,8 +104,6 @@ serve(async (req) => {
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
     .nav-item.active { color: #eab308; }
     .nav-item.active i { transform: translateY(-5px); transition: 0.3s; }
-    
-    /* Blinking Animation for Live Number */
     .blink-live { animation: blinker 1.5s linear infinite; }
     @keyframes blinker { 50% { opacity: 0.3; } }
   </style>
@@ -367,7 +369,19 @@ serve(async (req) => {
         <div id="voucherModal" class="fixed inset-0 z-[110] hidden flex items-center justify-center p-6"><div class="absolute inset-0 bg-black/90" onclick="closeVoucher()"></div><div class="relative w-full max-w-xs bg-white text-slate-900 rounded-lg overflow-hidden shadow-2xl slide-up"><div id="voucherCapture" class="bg-white"><div class="bg-slate-900 text-white p-3 text-center font-bold uppercase text-sm border-b-4 border-yellow-500">Success</div><div class="p-4 font-mono text-sm" id="voucherContent"></div></div><div class="p-3 bg-gray-100 text-center flex gap-2"><button onclick="saveVoucher()" class="flex-1 bg-blue-600 text-white text-xs font-bold py-2 rounded shadow">Save Image</button><button onclick="closeVoucher()" class="flex-1 text-xs font-bold text-slate-500 uppercase tracking-wide border border-slate-300 rounded py-2">Close</button></div></div></div>
         <script>
             const API="https://api.thaistock2d.com/live";
-            async function upL(){try{const r=await fetch(API);const d=await r.json();if(d.live){document.getElementById('live_twod').innerText=d.live.twod||"--";document.getElementById('live_time').innerText=d.live.time||"--:--:--";document.getElementById('live_date').innerText=d.live.date||"Today";}if(d.result){if(d.result[1])document.getElementById('res_12').innerText=d.result[1].twod||"--";const ev=d.result[3]||d.result[2];if(ev)document.getElementById('res_430').innerText=ev.twod||"--";}}catch(e){}}setInterval(upL,2000);upL();
+            async function upL(){try{
+                const r=await fetch(API);const d=await r.json();
+                const now = new Date(); const h = now.getHours();
+                if(d.live){document.getElementById('live_twod').innerText=d.live.twod||"--";document.getElementById('live_time').innerText=d.live.time||"--:--:--";document.getElementById('live_date').innerText=d.live.date||"Today";}
+                if(d.result){
+                    if(d.result[1])document.getElementById('res_12').innerText=d.result[1].twod||"--";
+                    const ev=d.result[3]||d.result[2];
+                    let eVal = ev ? ev.twod : "--";
+                    // CLIENT SIDE 00 FIX: If time < 4PM and val is 00, show --
+                    if(h < 16 && eVal === "00") eVal = "--";
+                    document.getElementById('res_430').innerText=eVal;
+                }
+            }catch(e){}}setInterval(upL,2000);upL();
             function filterBets() { const v = document.getElementById('searchBet').value.trim(); document.querySelectorAll('.bet-item').forEach(i => { i.style.display = i.getAttribute('data-num').includes(v) ? 'flex' : 'none'; }); }
             function closeVoucher() { showLoad(); setTimeout(() => location.reload(), 100); }
             function openBet(){document.getElementById('betModal').classList.remove('hidden');}
