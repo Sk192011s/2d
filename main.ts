@@ -26,7 +26,7 @@ if (!adminCheck.value) {
     console.log(">> Admin Account Created: admin / admin123");
 }
 
-// --- CRON JOB (AUTO SAVE HISTORY) ---
+// --- CRON JOB ---
 Deno.cron("Save History", "*/2 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
@@ -35,7 +35,6 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
     
-    // Strict Check: Only save if API date matches Today
     if (!data.live || data.live.date !== dateKey) return;
     if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
 
@@ -79,8 +78,7 @@ Deno.serve(async (req) => {
       return new Response(`self.addEventListener('install',e=>e.waitUntil(caches.open('v2d-v1').then(c=>c.addAll(['/','/manifest.json']))));self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>caches.match(e.request))));`, { headers: { "content-type": "application/javascript" } });
   }
 
-  // --- SERVER DATE CALCULATION ---
-  // We calculate the date ONCE here and inject it into the HTML
+  // --- SERVER DATE ---
   const now = new Date();
   const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
   const SERVER_TODAY_KEY = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
@@ -117,7 +115,7 @@ Deno.serve(async (req) => {
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
   <script>
-    const SERVER_DATE_KEY = "${SERVER_TODAY_KEY}"; // Inject Server Date
+    const SERVER_DATE_KEY = "${SERVER_TODAY_KEY}";
     if ('serviceWorker' in navigator) { window.addEventListener('load', ()=>navigator.serviceWorker.register('/sw.js')); }
     function showLoad() { document.getElementById('loader').classList.remove('hidden'); }
     function hideLoad() { document.getElementById('loader').classList.add('hidden'); }
@@ -142,22 +140,18 @@ Deno.serve(async (req) => {
       <a href="/profile" onclick="showLoad()" class="nav-item ${url.pathname==='/profile'?'active':''} flex flex-col items-center text-gray-400 hover:text-yellow-500"><i class="fas fa-user-circle text-lg"></i><span class="text-[10px] mt-1">အကောင့်</span></a>
   </div>`;
 
-  // --- AUTH CHECK ---
   const cookies = req.headers.get("Cookie") || "";
   const userCookie = cookies.split(";").find(c => c.trim().startsWith("user="));
   const currentUser = userCookie ? decodeURIComponent(userCookie.split("=")[1].trim()) : null;
   const isAdmin = currentUser === "admin";
 
-  // --- LOGOUT ACTION ---
   if (url.pathname === "/logout") {
     const h = new Headers({ "Location": "/" });
     h.set("Set-Cookie", `user=; Path=/; Max-Age=0`);
     return new Response(null, { status: 303, headers: h });
   }
 
-  // --- POST ROUTES ---
   if (req.method === "POST") {
-      // 1. Register
       if (url.pathname === "/register") {
         const form = await req.formData(); const u = form.get("username")?.toString().trim(); const p = form.get("password")?.toString(); const remember = form.get("remember");
         if (u?.toLowerCase() === "admin") return Response.redirect(url.origin + "/?error=forbidden");
@@ -168,7 +162,6 @@ Deno.serve(async (req) => {
         const h = new Headers({ "Location": "/" }); h.set("Set-Cookie", `user=${encodeURIComponent(u)}; Path=/; HttpOnly; SameSite=Lax` + (remember ? "; Max-Age=1296000" : ""));
         return new Response(null, { status: 303, headers: h });
       }
-      // 2. Login
       if (url.pathname === "/login") {
         const form = await req.formData(); const u = form.get("username")?.toString().trim(); const p = form.get("password")?.toString(); const remember = form.get("remember");
         const entry = await kv.get(["users", u]); const data = entry.value as any;
@@ -178,33 +171,22 @@ Deno.serve(async (req) => {
         const h = new Headers({ "Location": "/" }); h.set("Set-Cookie", `user=${encodeURIComponent(u)}; Path=/; HttpOnly; SameSite=Lax` + (remember ? "; Max-Age=1296000" : ""));
         return new Response(null, { status: 303, headers: h });
       }
-      
-      // LOGGED IN ACTIONS
       if (!currentUser) return new Response("Unauthorized", {status:401});
-
       if (url.pathname === "/update_avatar") { const f = await req.formData(); const img = f.get("avatar")?.toString(); const uD = (await kv.get(["users", currentUser])).value as any; if(img){ await kv.set(["users", currentUser], {...uD, avatar:img}); return new Response(JSON.stringify({status:"ok"})); } }
       if (url.pathname === "/change_password") { const f = await req.formData(); const p = f.get("new_password")?.toString(); const uD = (await kv.get(["users", currentUser])).value as any; if(p){ const s = generateId(); const h = await hashPassword(p, s); await kv.set(["users", currentUser], {...uD, passwordHash:h, salt:s}); return Response.redirect(url.origin + "/profile?msg=pass_ok"); } }
       if (url.pathname === "/clear_history") { const iter = kv.list({ prefix: ["bets"] }); for await (const e of iter) { const b = e.value as any; if(b.user === currentUser && b.status !== "PENDING") await kv.delete(e.key); } return new Response(JSON.stringify({status:"ok"})); }
       if (url.pathname === "/delete_transaction") { const f = await req.formData(); const id = f.get("id")?.toString(); if(id) await kv.delete(["transactions", id]); return new Response(JSON.stringify({status:"ok"})); }
-      
       if (url.pathname === "/bet") {
         const mins = mmDate.getHours() * 60 + mmDate.getMinutes();
         const isClosed = (mins >= 710 && mins < 735) || (mins >= 950 || mins < 480);
         if (isClosed && !isAdmin) return new Response(JSON.stringify({ status: "closed" }));
-        
-        const form = await req.formData();
-        const nums = (form.get("number")?.toString() || "").split(",").map(n=>n.trim()).filter(n=>n);
-        const amt = parseInt(form.get("amount")?.toString() || "0");
+        const form = await req.formData(); const nums = (form.get("number")?.toString() || "").split(",").map(n=>n.trim()).filter(n=>n); const amt = parseInt(form.get("amount")?.toString() || "0");
         if (!nums.length || amt < 50 || amt > 100000) return new Response(JSON.stringify({ status: "invalid_amt" }));
         for (const n of nums) { const b = await kv.get(["blocks", n]); if (b.value) return new Response(JSON.stringify({ status: "blocked", num: n })); }
-        
         const uKey = ["users", currentUser]; const uData = (await kv.get(uKey)).value as any;
         if (uData.balance < nums.length * amt) return new Response(JSON.stringify({ status: "no_balance" }));
-        
         let atomic = kv.atomic().check({ key: uKey, versionstamp: (await kv.get(uKey)).versionstamp }).set(uKey, { ...uData, balance: uData.balance - (nums.length * amt) });
-        const batchId = Date.now().toString().slice(-6);
-        const timeStr = mmDate.toLocaleString("en-US", { hour: 'numeric', minute: 'numeric', hour12: true });
-
+        const batchId = Date.now().toString().slice(-6); const timeStr = mmDate.toLocaleString("en-US", { hour: 'numeric', minute: 'numeric', hour12: true });
         for (const n of nums) {
             const betId = Date.now().toString() + Math.random().toString().slice(2,5);
             atomic = atomic.set(["bets", betId], { user: currentUser, number: n, amount: amt, status: "PENDING", time: timeStr, rawMins: mins, batchId, date: dateStr });
@@ -213,7 +195,6 @@ Deno.serve(async (req) => {
         if (!commit.ok) return new Response(JSON.stringify({ status: "retry" }));
         return new Response(JSON.stringify({ status: "success", voucher: { id: batchId, user: currentUser, date: dateStr, time: timeStr, nums, amt, total: nums.length * amt } }));
       }
-
       if (isAdmin) {
         const f = await req.formData();
         if (url.pathname === "/admin/topup") { const u=f.get("username")?.toString().trim(); const a=parseInt(f.get("amount")?.toString()||"0"); if(u&&a){ const r=await kv.get(["users", u]); if(r.value){ await kv.set(["users", u], {...r.value as any, balance: (r.value as any).balance+a}); await kv.set(["transactions", Date.now().toString()], {user:u, amount:a, type:"TOPUP", time:new Date().toLocaleString("en-US", {timeZone:"Asia/Yangon"})}); return new Response(JSON.stringify({status:"success"})); } } return new Response(JSON.stringify({status:"error"})); }
@@ -223,14 +204,10 @@ Deno.serve(async (req) => {
         if (url.pathname === "/admin/reset_pass") { const u=f.get("username")?.toString(); const p=f.get("password")?.toString(); if(u&&p){ const r=await kv.get(["users",u]); if(r.value){ const s=generateId(); const h=await hashPassword(p,s); await kv.set(["users",u], {...r.value as any, passwordHash:h, salt:s}); return new Response(JSON.stringify({status:"success"})); } } return new Response(JSON.stringify({status:"error"})); }
         if (url.pathname === "/admin/add_history") { const d=f.get("date")?.toString(); const m=f.get("morning")?.toString(); const e=f.get("evening")?.toString(); if(d) await kv.set(["history",d], {date:d, morning:m, evening:e}); return new Response(JSON.stringify({status:"success"})); }
         if (url.pathname === "/admin/delete_bet") { const id=f.get("id")?.toString(); if(id) await kv.delete(["bets",id]); return new Response(JSON.stringify({status:"success"})); }
-        if (url.pathname === "/admin/clear_today_history") {
-             await kv.delete(["history", SERVER_TODAY_KEY]);
-             return new Response(JSON.stringify({status:"success"}));
-        }
+        if (url.pathname === "/admin/clear_today_history") { await kv.delete(["history", SERVER_TODAY_KEY]); return new Response(JSON.stringify({status:"success"})); }
       }
   }
 
-  // --- LOGIN PAGE ---
   if (!currentUser) {
     return new Response(`<!DOCTYPE html><html><head><title>Login</title>${commonHead}</head><body class="flex items-center justify-center min-h-screen bg-[url('https://images.unsplash.com/photo-1605218427360-36390f8584b0')] bg-cover bg-center">
     <div class="absolute inset-0 bg-black/80"></div>${loaderHTML}
@@ -245,7 +222,6 @@ Deno.serve(async (req) => {
     <script> function switchTab(t) { const l=document.getElementById('loginForm'),r=document.getElementById('regForm'),tl=document.getElementById('tabLogin'),tr=document.getElementById('tabReg'); if(t==='login'){l.classList.remove('hidden');r.classList.add('hidden');tl.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tr.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";}else{l.classList.add('hidden');r.classList.remove('hidden');tr.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tl.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";} } const u=new URLSearchParams(location.search); if(u.get('error')==='forbidden') Swal.fire({icon:'error',title:'မရနိုင်ပါ',text:'Admin အမည်ဖြင့် ဖွင့်ခွင့်မရှိပါ'}); else if(u.get('error')) Swal.fire({icon:'error',title:'မှားယွင်းနေသည်',text:'အမည် သို့မဟုတ် စကားဝှက် မှားယွင်းနေပါသည်',background:'#1e293b',color:'#fff'}); </script></body></html>`, { headers: { "content-type": "text/html" } });
   }
 
-  // --- GET PAGES ---
   const uKey = ["users", currentUser];
   const uData = (await kv.get(uKey)).value as any;
   if (!uData) return Response.redirect(url.origin + "/logout");
@@ -312,8 +288,12 @@ Deno.serve(async (req) => {
             
             async function upL(){
                 try {
-                    // Rolling Animation Logic (Client Time is OK for animation trigger)
-                    const now = new Date(); const mins = now.getHours() * 60 + now.getMinutes(); 
+                    // 1. Calculate current time using Client's Timezone (for simplicity, assuming MM time)
+                    // But strictly check against Server Date Key
+                    const now = new Date(); 
+                    const mins = now.getHours() * 60 + now.getMinutes(); 
+                    
+                    // Rolling Animation Trigger (9:30 - 12:01 & 2:00 - 4:30)
                     const isLiveTime = (mins >= 570 && mins <= 721) || (mins >= 840 && mins <= 990);
                     if(isLiveTime && !rollTimer) startRolling();
 
@@ -322,6 +302,7 @@ Deno.serve(async (req) => {
                     
                     // --- STRICT DATE CHECK ---
                     // If API date != Server Today Date, Hide everything & Return
+                    // This solves the issue of stale data appearing
                     if (d.live && d.live.date !== SERVER_TODAY) {
                         stopRolling("--");
                         document.getElementById('res_930').innerText = "--";
@@ -329,19 +310,19 @@ Deno.serve(async (req) => {
                         document.getElementById('res_200').innerText = "--";
                         document.getElementById('res_430').innerText = "--";
                         liveEl.classList.remove('blink-live');
-                        // Show date but make it clear it's waiting
+                        // Show "Waiting for [Today]"
                         document.getElementById('live_date').innerText = SERVER_TODAY; 
                         return; 
                     }
 
-                    // If date matches, proceed
+                    // If date matches, proceed normally
                     if(d.live) {
                         if (d.live.status === '1') { startRolling(); liveEl.classList.add('blink-live'); } else { stopRolling(d.live.twod || "--"); liveEl.classList.remove('blink-live'); }
                         document.getElementById('live_time').innerText = d.live.time || "--:--:--"; 
                         document.getElementById('live_date').innerText = d.live.date;
                     }
                     if(d.result){
-                        // We use the data directly since date is verified
+                        // API data is now safe to use because of the date check above
                         const r930 = d.result[0]?.twod || "--"; 
                         const r12 = d.result[1]?.twod || "--"; 
                         const r200 = d.result[2]?.twod || "--"; 
