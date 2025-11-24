@@ -2,7 +2,7 @@ import { crypto } from "https://deno.land/std@0.208.0/crypto/mod.ts";
 
 const kv = await Deno.openKv();
 
-// --- HELPER FUNCTIONS ---
+// --- 2D HELPER FUNCTIONS ---
 async function hashPassword(p: string, s: string) {
   const data = new TextEncoder().encode(p + s);
   const hash = await crypto.subtle.digest("SHA-256", data);
@@ -13,7 +13,7 @@ function escapeHtml(unsafe: string) {
     return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
-// --- AUTO CREATE ADMIN ACCOUNT ---
+// --- 2D ADMIN SETUP ---
 const adminCheck = await kv.get(["users", "admin"]);
 if (!adminCheck.value) {
     const s = generateId();
@@ -25,7 +25,7 @@ if (!adminCheck.value) {
     });
 }
 
-// --- CRON JOB ---
+// --- 2D CRON JOB ---
 Deno.cron("Save History", "*/2 * * * *", async () => {
   try {
     const res = await fetch("https://api.thaistock2d.com/live");
@@ -65,6 +65,172 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
 Deno.serve(async (req) => {
   const url = new URL(req.url);
 
+  // ==========================================
+  // SECTION 1: FOOTBALL LOGIC & ROUTES
+  // ==========================================
+
+  // 1.1 API for Football (Matches List)
+  if (url.pathname === "/api/football/matches") {
+    try {
+      // Vietnam Timezone for Socolive Date
+      const getVNDate = (offset: number) => {
+        const d = new Date();
+        d.setDate(d.getDate() + offset);
+        return new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Ho_Chi_Minh",
+          year: "numeric", month: "2-digit", day: "2-digit"
+        }).format(d).replace(/-/g, "");
+      };
+
+      const dates = [getVNDate(-1), getVNDate(0), getVNDate(1)];
+      const referer = "https://socolivev.co/";
+      const agent = "Mozilla/5.0";
+
+      let allMatches: any[] = [];
+      for (const d of dates) {
+        const matches = await fetchSocoMatches(d, referer, agent);
+        allMatches = allMatches.concat(matches);
+      }
+
+      // Sort: Live first
+      allMatches.sort((a, b) => (a.match_status === 'live' ? -1 : 1));
+
+      return new Response(JSON.stringify(allMatches), {
+        headers: { "Content-Type": "application/json" }
+      });
+    } catch (e: any) {
+      return new Response(JSON.stringify({ error: e.message }), { status: 500 });
+    }
+  }
+
+  // 1.2 Football UI Page
+  if (url.pathname === "/football") {
+    return new Response(`
+    <!DOCTYPE html>
+    <html lang="my">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <title>Football Live</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Padauk:wght@400;700&display=swap" rel="stylesheet">
+        <style>
+            body { background: #0f172a; color: white; font-family: 'Padauk', sans-serif; padding-bottom: 80px; }
+            .live-dot { width: 8px; height: 8px; background: #ef4444; border-radius: 50%; display: inline-block; animation: blink 1s infinite; }
+            @keyframes blink { 50% { opacity: 0.4; } }
+            .glass { background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(255,255,255,0.1); }
+            .back-btn { position: fixed; top: 15px; left: 15px; z-index: 50; background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 50px; backdrop-filter: blur(5px); }
+        </style>
+    </head>
+    <body class="max-w-md mx-auto p-4 pt-16">
+        <a href="/" class="back-btn text-white text-sm"><i class="fas fa-arrow-left"></i> 2D</a>
+        <h1 class="text-xl font-bold text-center mb-6 text-green-400 fixed top-0 left-0 w-full bg-[#0f172a]/90 backdrop-blur py-4 z-40 shadow-lg">
+            ⚽ Football Live (MM Time)
+        </h1>
+
+        <!-- Player -->
+        <div id="player-container" class="hidden sticky top-16 z-50 mb-4 bg-black rounded-lg overflow-hidden border border-gray-600 shadow-2xl">
+            <video id="video" controls class="w-full aspect-video" autoplay></video>
+            <button onclick="closePlayer()" class="w-full bg-red-600 text-white text-xs font-bold py-2">Close Player</button>
+        </div>
+
+        <!-- Loading -->
+        <div id="loading" class="text-center py-10 text-gray-400">
+            <i class="fas fa-circle-notch fa-spin text-2xl mb-2"></i><br>
+            ပွဲစဉ်များကို ရှာဖွေနေပါသည်...
+        </div>
+
+        <!-- List -->
+        <div id="match-list" class="space-y-3"></div>
+
+        <script>
+            async function load() {
+                try {
+                    const res = await fetch('/api/football/matches');
+                    const data = await res.json();
+                    document.getElementById('loading').style.display = 'none';
+                    const list = document.getElementById('match-list');
+                    
+                    if (data.length === 0) {
+                        list.innerHTML = '<div class="text-center text-gray-500 mt-10">လက်ရှိ ဘောလုံးပွဲများ မရှိသေးပါ</div>';
+                        return;
+                    }
+
+                    data.forEach(m => {
+                        const isLive = m.match_status === 'live';
+                        const statusBadge = isLive 
+                            ? '<span class="text-red-500 font-bold text-[10px] flex items-center gap-1"><span class="live-dot"></span> LIVE</span>' 
+                            : '<span class="text-gray-500 text-[10px]">' + m.match_time + '</span>';
+                        
+                        let btns = '';
+                        if (m.servers.length > 0) {
+                            m.servers.forEach(s => {
+                                const label = s.name.includes('HD') ? 'HD' : 'SD';
+                                const col = label === 'HD' ? 'bg-red-600' : 'bg-blue-600';
+                                btns += \`<button onclick="play('\${s.stream_url}')" class="\${col} text-white text-[10px] px-3 py-1.5 rounded shadow hover:opacity-80 mr-2 font-bold"><i class="fas fa-play"></i> \${label}</button>\`;
+                            });
+                        } else if (isLive) {
+                            btns = '<span class="text-[10px] text-yellow-500 animate-pulse">Link ရှာနေဆဲ...</span>';
+                        }
+
+                        const html = \`
+                            <div class="glass rounded-xl p-3 shadow-lg">
+                                <div class="flex justify-between items-center mb-2">
+                                    <span class="text-[10px] text-gray-400 truncate w-2/3 uppercase">\${m.league_name}</span>
+                                    \${statusBadge}
+                                </div>
+                                <div class="flex justify-between items-center text-center">
+                                    <div class="w-1/3 text-xs font-bold truncate">\${m.home_team_name}</div>
+                                    <div class="w-1/3 text-xl font-bold text-yellow-400 font-mono">\${m.match_score || 'VS'}</div>
+                                    <div class="w-1/3 text-xs font-bold truncate">\${m.away_team_name}</div>
+                                </div>
+                                <div class="text-center mt-3 pt-2 border-t border-white/5">
+                                    \${btns}
+                                </div>
+                            </div>
+                        \`;
+                        list.innerHTML += html;
+                    });
+                } catch (e) {
+                    document.getElementById('loading').innerText = "Error: " + e.message;
+                }
+            }
+
+            function play(url) {
+                document.getElementById('player-container').classList.remove('hidden');
+                const vid = document.getElementById('video');
+                if (Hls.isSupported()) {
+                    const hls = new Hls();
+                    hls.loadSource(url);
+                    hls.attachMedia(vid);
+                    hls.on(Hls.Events.MANIFEST_PARSED, () => vid.play());
+                } else if (vid.canPlayType('application/vnd.apple.mpegurl')) {
+                    vid.src = url;
+                    vid.play();
+                }
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+
+            function closePlayer() {
+                const vid = document.getElementById('video');
+                vid.pause();
+                vid.src = "";
+                document.getElementById('player-container').classList.add('hidden');
+            }
+
+            load();
+        </script>
+    </body>
+    </html>
+    `, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+  }
+
+  // ==========================================
+  // SECTION 2: 2D LOTTERY LOGIC & ROUTES
+  // ==========================================
+
   // --- ASSETS ---
   if (url.pathname === "/manifest.json") {
       return new Response(JSON.stringify({ 
@@ -77,13 +243,13 @@ Deno.serve(async (req) => {
       return new Response(`self.addEventListener('install',e=>e.waitUntil(caches.open('v2d-v1').then(c=>c.addAll(['/','/manifest.json']))));self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>caches.match(e.request))));`, { headers: { "content-type": "application/javascript" } });
   }
 
-  // --- SERVER DATE CALCULATION ---
+  // --- SERVER DATE ---
   const now = new Date();
   const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
   const SERVER_TODAY_KEY = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
   const dateStr = mmDate.toLocaleString("en-US", { day: 'numeric', month: 'short', year: 'numeric' });
 
-  // --- HTML TEMPLATES ---
+  // --- HTML TEMPLATES (2D) ---
   const commonHead = `
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <link rel="manifest" href="/manifest.json">
@@ -150,7 +316,7 @@ Deno.serve(async (req) => {
     return new Response(null, { status: 303, headers: h });
   }
 
-  // --- POST HANDLERS ---
+  // --- POST HANDLERS (2D) ---
   if (req.method === "POST") {
       if (url.pathname === "/register") {
         const form = await req.formData(); const u = form.get("username")?.toString().trim(); const p = form.get("password")?.toString(); const remember = form.get("remember");
@@ -233,7 +399,7 @@ Deno.serve(async (req) => {
       const contact = (await kv.get(["system", "contact"])).value as any || {};
       let todayWin = 0, todayLose = 0;
       for await (const e of kv.list({ prefix: ["bets"] })) { const b = e.value as any; if(b.user === currentUser && b.date === dateStr) { if(b.status === 'WIN') todayWin += (b.winAmount || 0); if(b.status === 'LOSE') todayLose += b.amount; } }
-      return new Response(`<!DOCTYPE html><html><head><title>Profile</title>${commonHead}</head><body>${loaderHTML}${navHTML}<div class="p-6 max-w-md mx-auto space-y-4 pb-24"><div class="glass p-6 rounded-3xl text-center relative mt-4"><div class="relative w-24 h-24 mx-auto mb-3"><div class="w-24 h-24 rounded-full border-4 border-yellow-500 overflow-hidden relative bg-slate-800 flex items-center justify-center">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-gray-500"></i>`}</div><button onclick="document.getElementById('fIn').click()" class="absolute bottom-0 right-0 bg-white text-black rounded-full p-2 border-2 border-slate-900"><i class="fas fa-camera text-xs"></i></button><input type="file" id="fIn" hidden accept="image/*" onchange="upAv(this)"></div><h1 class="text-xl font-bold text-white uppercase">${escapeHtml(currentUser)}</h1><div class="text-yellow-500 font-mono font-bold text-lg">${balance.toLocaleString()} Ks</div></div><div class="grid grid-cols-2 gap-2 text-center"><div class="glass p-3 rounded-xl border-l-2 border-green-500"><div class="text-xs text-gray-400">ဒီနေ့ နိုင်ငွေ</div><div class="font-bold text-green-400 text-sm">+${todayWin.toLocaleString()}</div></div><div class="glass p-3 rounded-xl border-l-2 border-red-500"><div class="text-xs text-gray-400">ဒီနေ့ ရှုံးငွေ</div><div class="font-bold text-red-400 text-sm">-${todayLose.toLocaleString()}</div></div></div><div class="glass p-4 rounded-xl space-y-3"><h3 class="text-xs font-bold text-gray-400 uppercase">Admin ထံဆက်သွယ်ရန်</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-900/40 p-2 rounded border border-blue-500/30 text-center"><div class="text-blue-400 text-xs">KPay</div><div class="font-bold select-all text-sm">${contact.kpay_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.kpay_name||''}</div></div><div class="bg-yellow-900/40 p-2 rounded border border-yellow-500/30 text-center"><div class="text-yellow-400 text-xs">Wave</div><div class="font-bold select-all text-sm">${contact.wave_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.wave_name||''}</div></div></div><a href="${contact.tele_link||'#'}" target="_blank" class="block w-full bg-blue-600 text-white text-center py-2 rounded font-bold"><i class="fab fa-telegram"></i> Telegram Channel</a></div><form action="/change_password" method="POST" class="glass p-4 rounded-xl flex gap-2" onsubmit="showLoad()"><input type="password" name="new_password" placeholder="စကားဝှက်အသစ်" class="input-dark text-sm" required><button class="bg-yellow-600 text-white px-4 rounded font-bold text-xs whitespace-nowrap">ချိန်းမည်</button></form><div class="glass rounded-xl p-4"><h3 class="text-xs font-bold text-gray-400 uppercase mb-3">ငွေဖြည့်မှတ်တမ်း</h3><div class="space-y-2 h-48 overflow-y-auto">${txs.length?txs.map(t=>`<div class="flex justify-between items-center p-2 bg-slate-800 rounded border-l-2 border-green-500" onclick="showTx('${t.time}', '${t.amount}', '${t.type}')"><div><span class="text-xs text-gray-400 block">${t.time}</span><span class="text-[10px] text-blue-400 font-bold">Admin Top-up</span></div><div class="flex items-center gap-2"><span class="font-bold text-green-400">+${t.amount}</span><button onclick="delTx(event, '${t.id}')" class="text-gray-600 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button></div></div>`).join(''):'<div class="text-center text-xs text-gray-500">မှတ်တမ်း မရှိပါ</div>'}</div></div><button onclick="doLogout()" class="block w-full text-center text-red-400 text-sm font-bold py-4">အကောင့်ထွက်မည် (LOGOUT)</button></div><script>function upAv(i){if(i.files&&i.files[0]){const r=new FileReader();r.onload=function(e){const im=new Image();im.src=e.target.result;im.onload=function(){const c=document.createElement('canvas');const x=c.getContext('2d');c.width=150;c.height=150;x.drawImage(im,0,0,150,150);showLoad();const fd=new FormData();fd.append('avatar',c.toDataURL('image/jpeg',0.7));fetch('/update_avatar',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{hideLoad();location.reload();});}};r.readAsDataURL(i.files[0]);}}const u=new URLSearchParams(location.search);if(u.get('msg')==='pass_ok')Swal.fire({icon:'success',title:'အောင်မြင်သည်',text:'စကားဝှက်ပြောင်းလဲပြီးပါပြီ',background:'#1e293b',color:'#fff'});function showTx(t,a,type){Swal.fire({title:'ငွေဖြည့်မှတ်တမ်း',html:\`<div class="text-left">အမျိုးအစား: <b>\${type}</b><br>ပမာဏ: <b class="text-green-400">\${a} Ks</b><br>အချိန်: \${t}</div>\`,background:'#1e293b',color:'#fff'});}function delTx(e,id){e.stopPropagation();Swal.fire({title:'မှတ်တမ်းဖျက်မလား?',icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'ဖျက်မည်',cancelButtonText:'မလုပ်တော့ပါ',background:'#1e293b',color:'#fff'}).then(r=>{if(r.isConfirmed){const fd=new FormData();fd.append('id',id);fetch('/delete_transaction',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{if(d.status==='ok')location.reload();});}});}</script></body></html>`, { headers: {"content-type": "text/html"} });
+      return new Response(`<!DOCTYPE html><html><head><title>Profile</title>${commonHead}</head><body>${loaderHTML}${navHTML}<div class="p-6 max-w-md mx-auto space-y-4 pb-24"><div class="glass p-6 rounded-3xl text-center relative mt-4"><div class="relative w-24 h-24 mx-auto mb-3"><div class="w-24 h-24 rounded-full border-4 border-yellow-500 overflow-hidden relative bg-slate-800 flex items-center justify-center">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-gray-500"></i>`}</div><button onclick="document.getElementById('fIn').click()" class="absolute bottom-0 right-0 bg-white text-black rounded-full p-2 border-2 border-slate-900"><i class="fas fa-camera text-xs"></i></button><input type="file" id="fIn" hidden accept="image/*" onchange="upAv(this)"></div><h1 class="text-xl font-bold text-white uppercase">${escapeHtml(currentUser)}</h1><div class="text-yellow-500 font-mono font-bold text-lg">${balance.toLocaleString()} Ks</div></div><div class="grid grid-cols-2 gap-2 text-center"><div class="glass p-3 rounded-xl border-l-2 border-green-500"><div class="text-xs text-gray-400">ဒီနေ့ နိုင်ငွေ</div><div class="font-bold text-green-400 text-sm">+${todayWin.toLocaleString()}</div></div><div class="glass p-3 rounded-xl border-l-2 border-red-500"><div class="text-xs text-gray-400">ဒီနေ့ ရှုံးငွေ</div><div class="font-bold text-red-400 text-sm">-${todayLose.toLocaleString()}</div></div></div><div class="glass p-4 rounded-xl space-y-3"><h3 class="text-xs font-bold text-gray-400 uppercase">Admin ထံဆက်သွယ်ရန်</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-900/40 p-2 rounded border border-blue-500/30 text-center"><div class="text-blue-400 text-xs">KPay</div><div class="font-bold select-all text-sm">${contact.kpay_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.kpay_name||''}</div></div><div class="bg-yellow-900/40 p-2 rounded border border-yellow-500/30 text-center"><div class="text-yellow-400 text-xs">Wave</div><div class="font-bold select-all text-sm">${contact.wave_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.wave_name||''}</div></div></div><a href="${contact.tele_link||'#'}" target="_blank" class="block w-full bg-blue-600 text-center py-2 rounded font-bold text-white"><i class="fab fa-telegram"></i> Telegram Channel</a></div><form action="/change_password" method="POST" class="glass p-4 rounded-xl flex gap-2" onsubmit="showLoad()"><input type="password" name="new_password" placeholder="စကားဝှက်အသစ်" class="input-dark text-sm" required><button class="bg-yellow-600 text-white px-4 rounded font-bold text-xs whitespace-nowrap">ချိန်းမည်</button></form><div class="glass rounded-xl p-4"><h3 class="text-xs font-bold text-gray-400 uppercase mb-3">ငွေဖြည့်မှတ်တမ်း</h3><div class="space-y-2 h-48 overflow-y-auto">${txs.length?txs.map(t=>`<div class="flex justify-between items-center p-2 bg-slate-800 rounded border-l-2 border-green-500" onclick="showTx('${t.time}', '${t.amount}', '${t.type}')"><div><span class="text-xs text-gray-400 block">${t.time}</span><span class="text-[10px] text-blue-400 font-bold">Admin Top-up</span></div><div class="flex items-center gap-2"><span class="font-bold text-green-400">+${t.amount}</span><button onclick="delTx(event, '${t.id}')" class="text-gray-600 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button></div></div>`).join(''):'<div class="text-center text-xs text-gray-500">မှတ်တမ်း မရှိပါ</div>'}</div></div><button onclick="doLogout()" class="block w-full text-center text-red-400 text-sm font-bold py-4">အကောင့်ထွက်မည် (LOGOUT)</button></div><script>function upAv(i){if(i.files&&i.files[0]){const r=new FileReader();r.onload=function(e){const im=new Image();im.src=e.target.result;im.onload=function(){const c=document.createElement('canvas');const x=c.getContext('2d');c.width=150;c.height=150;x.drawImage(im,0,0,150,150);showLoad();const fd=new FormData();fd.append('avatar',c.toDataURL('image/jpeg',0.7));fetch('/update_avatar',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{hideLoad();location.reload();});}};r.readAsDataURL(i.files[0]);}}const u=new URLSearchParams(location.search);if(u.get('msg')==='pass_ok')Swal.fire({icon:'success',title:'အောင်မြင်သည်',text:'စကားဝှက်ပြောင်းလဲပြီးပါပြီ',background:'#1e293b',color:'#fff'});function showTx(t,a,type){Swal.fire({title:'ငွေဖြည့်မှတ်တမ်း',html:\`<div class="text-left">အမျိုးအစား: <b>\${type}</b><br>ပမာဏ: <b class="text-green-400">\${a} Ks</b><br>အချိန်: \${t}</div>\`,background:'#1e293b',color:'#fff'});}function delTx(e,id){e.stopPropagation();Swal.fire({title:'မှတ်တမ်းဖျက်မလား?',icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'ဖျက်မည်',cancelButtonText:'မလုပ်တော့ပါ',background:'#1e293b',color:'#fff'}).then(r=>{if(r.isConfirmed){const fd=new FormData();fd.append('id',id);fetch('/delete_transaction',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{if(d.status==='ok')location.reload();});}});}</script></body></html>`, { headers: {"content-type": "text/html"} });
   }
 
   if (url.pathname === "/history") {
@@ -281,6 +447,21 @@ Deno.serve(async (req) => {
             ${isAdmin ? '<span class="bg-red-600 text-[10px] px-2 py-1 rounded font-bold">ADMIN</span>' : ''}
         </nav>
         <div class="pt-20 px-4 pb-24 max-w-md mx-auto space-y-6">
+            
+            <!-- ADDED FOOTBALL BUTTON -->
+            <a href="/football" class="glass p-3 rounded-xl border border-green-500/30 flex items-center justify-between group active:scale-95 transition-transform shadow-lg shadow-green-900/20">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center text-green-400 border border-green-500/50">
+                        <i class="fas fa-futbol text-lg animate-pulse"></i>
+                    </div>
+                    <div>
+                        <div class="text-green-400 font-bold text-sm">Live Football</div>
+                        <div class="text-[10px] text-gray-400">ဘောပွဲများ ကြည့်ရှုရန် နှိပ်ပါ</div>
+                    </div>
+                </div>
+                <i class="fas fa-chevron-right text-gray-500 group-hover:text-white transition"></i>
+            </a>
+
             <div class="glass rounded-3xl p-6 text-center relative overflow-hidden group"><div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-500 to-transparent opacity-50"></div><div class="flex justify-between text-xs text-gray-400 mb-2 font-mono"><span id="live_date">--</span><span class="text-red-500 animate-pulse font-bold">● LIVE</span></div><div class="py-2"><div id="live_twod" class="text-7xl font-bold gold-text font-mono drop-shadow-lg tracking-tighter blink-live">--</div><div class="text-xs text-gray-500 mt-2 font-mono">Updated: <span id="live_time">--:--:--</span></div></div>
             
             <div class="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5">
@@ -300,6 +481,7 @@ Deno.serve(async (req) => {
         <div id="betModal" class="fixed inset-0 z-[100] hidden"><div class="absolute inset-0 bg-black/80 backdrop-blur-sm" onclick="document.getElementById('betModal').classList.add('hidden')"></div><div class="absolute bottom-0 w-full bg-[#1e293b] rounded-t-3xl p-6 slide-up shadow-2xl border-t border-yellow-500/30"><div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-white">ထိုးမည့်ဂဏန်းရွေးပါ</h2><button onclick="document.getElementById('betModal').classList.add('hidden')" class="text-gray-400 text-2xl">&times;</button></div><div class="flex gap-2 mb-4 overflow-x-auto pb-2 no-scrollbar"><button onclick="setMode('direct')" class="px-4 py-1 bg-yellow-500 text-black text-xs font-bold rounded-full whitespace-nowrap">တိုက်ရိုက်</button><button onclick="quickInput('R')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">R (အပြန်)</button><button onclick="quickInput('double')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">အပူး</button><button onclick="quickInput('brother')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ညီအစ်ကို</button><button onclick="quickInput('power')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ပါဝါ</button><button onclick="quickInput('head')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ထိပ်</button><button onclick="quickInput('tail')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">နောက်</button></div><form onsubmit="confirmBet(event)"><div class="bg-black/30 p-3 rounded-xl border border-white/5 mb-4"><textarea id="betNums" name="number" class="w-full bg-transparent text-lg font-mono font-bold text-white placeholder-gray-600 focus:outline-none resize-none h-20" placeholder="12, 34, 56..."></textarea></div><div class="mb-6"><label class="text-xs text-gray-400 uppercase font-bold">ငွေပမာဏ (အနည်းဆုံး ၅၀ ကျပ်)</label><input type="number" name="amount" id="betAmt" class="w-full p-3 bg-black/30 text-white font-bold focus:outline-none rounded-xl mt-2 border border-white/5" placeholder="50" required></div><button class="w-full py-4 rounded-xl gold-bg text-black font-bold text-lg">ထိုးမည် (CONFIRM)</button></form></div></div>
         <div id="voucherModal" class="fixed inset-0 z-[110] hidden flex items-center justify-center p-6"><div class="absolute inset-0 bg-black/90" onclick="closeVoucher()"></div><div class="relative w-full max-w-xs bg-white text-slate-900 rounded-lg overflow-hidden shadow-2xl slide-up"><div id="voucherCapture" class="bg-white"><div class="bg-slate-900 text-white p-3 text-center font-bold uppercase text-sm border-b-4 border-yellow-500">အောင်မြင်ပါသည်</div><div class="p-4 font-mono text-sm" id="voucherContent"></div></div><div class="p-3 bg-gray-100 text-center flex gap-2"><button onclick="saveVoucher()" class="flex-1 bg-blue-600 text-white text-xs font-bold py-2 rounded shadow">ဘောင်ချာသိမ်းမည်</button><button onclick="closeVoucher()" class="flex-1 text-xs font-bold text-slate-500 uppercase tracking-wide border border-slate-300 rounded py-2">ပိတ်မည်</button></div></div></div>
         <script>
+            // --- CONFIG ---
             const API = "https://api.thaistock2d.com/live";
             const SERVER_TODAY = "${SERVER_TODAY_KEY}";
             let lastM = "--"; let lastE = "--"; let firstLoad = true;
@@ -310,16 +492,14 @@ Deno.serve(async (req) => {
             
             async function upL(){
                 try {
-                    // Rolling Logic (Always check first)
-                    const now = new Date(); 
+                    const now = new Date();
                     const mins = now.getHours() * 60 + now.getMinutes(); 
-                    // Live times: 9:30-12:01 AND 2:00-4:30
+                    
                     const isLiveTime = (mins >= 570 && mins <= 721) || (mins >= 840 && mins <= 990);
                     if(isLiveTime && !rollTimer) startRolling();
 
                     const r = await fetch(API); const d = await r.json();
                     
-                    // Strict Date Check
                     if (d.live && d.live.date !== SERVER_TODAY) {
                         stopRolling("--");
                         document.getElementById('res_930').innerText = "--";
@@ -331,13 +511,13 @@ Deno.serve(async (req) => {
                         return;
                     }
 
-                    // Data Extraction (WITHOUT Time Gate)
                     if(d.result){
                         const r930 = d.result[0]?.twod || "--"; 
                         const r12 = d.result[1]?.twod || "--"; 
                         const r200 = d.result[2]?.twod || "--"; 
                         let r430 = (d.result[3] || d.result[2])?.twod || "--";
                         
+                        // Safety: hide 4:30 result if too early (prevents 00 bug)
                         const h = new Date().getHours();
                         if(h < 16 && r430 === "00") r430 = "--";
                         
@@ -397,3 +577,70 @@ Deno.serve(async (req) => {
 
   return new Response("404 Not Found", { status: 404 });
 });
+
+// --- FOOTBALL HELPER FUNCTIONS ---
+async function fetchServerURL(roomNum: any) {
+  try {
+    const res = await fetch(`https://json.vnres.co/room/${roomNum}/detail.json`, {
+        headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://socolivev.co/" }
+    });
+    const txt = await res.text();
+    const m = txt.match(/detail\((.*)\)/);
+    if (m) {
+      const js = JSON.parse(m[1]);
+      if (js.code === 200 && js.data && js.data.stream) {
+        return { m3u8: js.data.stream.m3u8, hdM3u8: js.data.stream.hdM3u8 };
+      }
+    }
+  } catch (e) { /* ignore */ }
+  return { m3u8: null, hdM3u8: null };
+}
+
+async function fetchSocoMatches(date: string, referer: string, agent: string) {
+  try {
+    const res = await fetch(`https://json.vnres.co/match/matches_${date}.json`, {
+      headers: { "User-Agent": agent, "Referer": referer }
+    });
+    const txt = await res.text();
+    const m = txt.match(/matches_\d+\((.*)\)/);
+    if (!m) return [];
+    
+    const js = JSON.parse(m[1]);
+    if (js.code !== 200) return [];
+
+    const now = Date.now();
+    const results = [];
+
+    for (const it of js.data) {
+      // FILTER: ONLY FOOTBALL (SportType 1)
+      if (it.sportType !== 1) continue;
+
+      const mt = it.matchTime;
+      let status;
+      if (now >= mt && now <= mt + (3*3600*1000)) status = "live";
+      else if (now > mt + (3*3600*1000)) status = "finished";
+      else status = "upcoming";
+
+      const servers = [];
+      if (status === "live" && it.anchors) {
+        for (const a of it.anchors) {
+          const room = a.anchor.roomNum;
+          const { m3u8, hdM3u8 } = await fetchServerURL(room);
+          if (m3u8) servers.push({ name: "Soco SD", stream_url: m3u8 });
+          if (hdM3u8) servers.push({ name: "Soco HD", stream_url: hdM3u8 });
+        }
+      }
+
+      results.push({
+        match_time: new Date(mt).toLocaleTimeString('en-US', { timeZone: 'Asia/Yangon', hour: '2-digit', minute: '2-digit', hour12: true }),
+        match_status: status,
+        home_team_name: it.homeName || it.hostName,
+        away_team_name: it.awayName || it.guestName,
+        league_name: it.leagueName || it.subCateName,
+        match_score: (it.homeScore !== undefined) ? `${it.homeScore} - ${it.awayScore}` : null,
+        servers
+      });
+    }
+    return results;
+  } catch (e) { return []; }
+}
