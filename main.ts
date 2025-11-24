@@ -387,16 +387,36 @@ serve(async (req) => {
         <div id="voucherModal" class="fixed inset-0 z-[110] hidden flex items-center justify-center p-6"><div class="absolute inset-0 bg-black/90" onclick="closeVoucher()"></div><div class="relative w-full max-w-xs bg-white text-slate-900 rounded-lg overflow-hidden shadow-2xl slide-up"><div id="voucherCapture" class="bg-white"><div class="bg-slate-900 text-white p-3 text-center font-bold uppercase text-sm border-b-4 border-yellow-500">အောင်မြင်ပါသည်</div><div class="p-4 font-mono text-sm" id="voucherContent"></div></div><div class="p-3 bg-gray-100 text-center flex gap-2"><button onclick="saveVoucher()" class="flex-1 bg-blue-600 text-white text-xs font-bold py-2 rounded shadow">ဘောင်ချာသိမ်းမည်</button><button onclick="closeVoucher()" class="flex-1 text-xs font-bold text-slate-500 uppercase tracking-wide border border-slate-300 rounded py-2">ပိတ်မည်</button></div></div></div>
         <script>
             const API="https://api.thaistock2d.com/live";
+            let lastM = "--"; let lastE = "--"; let firstLoad = true;
             async function upL(){try{
                 const r=await fetch(API);const d=await r.json();
                 const now = new Date(); const h = now.getHours();
-                if(d.live){document.getElementById('live_twod').innerText=d.live.twod||"--";document.getElementById('live_time').innerText=d.live.time||"--:--:--";document.getElementById('live_date').innerText=d.live.date||"Today";}
+                const liveEl = document.getElementById('live_twod');
+                
+                if(d.live){
+                   liveEl.innerText=d.live.twod||"--";
+                   document.getElementById('live_time').innerText=d.live.time||"--:--:--";
+                   document.getElementById('live_date').innerText=d.live.date||"Today";
+                   // Stop blinking if market closed (status 0) OR value is "--"
+                   if(d.live.status === '0' || d.live.twod === '--') liveEl.classList.remove('blink-live');
+                   else liveEl.classList.add('blink-live');
+                }
+                
                 if(d.result){
-                    if(d.result[1])document.getElementById('res_12').innerText=d.result[1].twod||"--";
-                    const ev=d.result[3]||d.result[2];
-                    let eVal = ev ? ev.twod : "--";
-                    if(h < 16 && eVal === "00") eVal = "--";
-                    document.getElementById('res_430').innerText=eVal;
+                    const newM = d.result[1] ? d.result[1].twod : "--";
+                    const ev = d.result[3]||d.result[2];
+                    let newE = ev ? ev.twod : "--";
+                    if(h < 16 && newE === "00") newE = "--"; // 00 Fix
+
+                    document.getElementById('res_12').innerText = newM;
+                    document.getElementById('res_430').innerText = newE;
+
+                    // NOTIFICATIONS
+                    if(!firstLoad) {
+                        if(lastM === "--" && newM !== "--") Swal.fire({title:'မနက်ပိုင်း ဂဏန်းထွက်ပါပြီ!', text: newM, icon:'info', confirmButtonColor: '#eab308'});
+                        if(lastE === "--" && newE !== "--") Swal.fire({title:'ညနေပိုင်း ဂဏန်းထွက်ပါပြီ!', text: newE, icon:'info', confirmButtonColor: '#eab308'});
+                    }
+                    lastM = newM; lastE = newE; firstLoad = false;
                 }
             }catch(e){}}setInterval(upL,2000);upL();
             function filterBets() { const v = document.getElementById('searchBet').value.trim(); document.querySelectorAll('.bet-item').forEach(i => { i.style.display = i.getAttribute('data-num').includes(v) ? 'flex' : 'none'; }); }
