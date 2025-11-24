@@ -69,7 +69,6 @@ Deno.serve(async (req) => {
   // SECTION 1: FOOTBALL LOGIC & ROUTES
   // ==========================================
 
-  // 1.1 API for Football (Matches List)
   if (url.pathname === "/api/football/matches") {
     try {
       // Vietnam Timezone for Socolive Date
@@ -84,7 +83,7 @@ Deno.serve(async (req) => {
 
       const dates = [getVNDate(-1), getVNDate(0), getVNDate(1)];
       const referer = "https://socolivev.co/";
-      const agent = "Mozilla/5.0";
+      const agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 
       let allMatches: any[] = [];
       for (const d of dates) {
@@ -92,7 +91,6 @@ Deno.serve(async (req) => {
         allMatches = allMatches.concat(matches);
       }
 
-      // Sort: Live first
       allMatches.sort((a, b) => (a.match_status === 'live' ? -1 : 1));
 
       return new Response(JSON.stringify(allMatches), {
@@ -481,7 +479,6 @@ Deno.serve(async (req) => {
         <div id="betModal" class="fixed inset-0 z-[100] hidden"><div class="absolute inset-0 bg-black/80 backdrop-blur-sm" onclick="document.getElementById('betModal').classList.add('hidden')"></div><div class="absolute bottom-0 w-full bg-[#1e293b] rounded-t-3xl p-6 slide-up shadow-2xl border-t border-yellow-500/30"><div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-white">ထိုးမည့်ဂဏန်းရွေးပါ</h2><button onclick="document.getElementById('betModal').classList.add('hidden')" class="text-gray-400 text-2xl">&times;</button></div><div class="flex gap-2 mb-4 overflow-x-auto pb-2 no-scrollbar"><button onclick="setMode('direct')" class="px-4 py-1 bg-yellow-500 text-black text-xs font-bold rounded-full whitespace-nowrap">တိုက်ရိုက်</button><button onclick="quickInput('R')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">R (အပြန်)</button><button onclick="quickInput('double')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">အပူး</button><button onclick="quickInput('brother')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ညီအစ်ကို</button><button onclick="quickInput('power')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ပါဝါ</button><button onclick="quickInput('head')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ထိပ်</button><button onclick="quickInput('tail')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">နောက်</button></div><form onsubmit="confirmBet(event)"><div class="bg-black/30 p-3 rounded-xl border border-white/5 mb-4"><textarea id="betNums" name="number" class="w-full bg-transparent text-lg font-mono font-bold text-white placeholder-gray-600 focus:outline-none resize-none h-20" placeholder="12, 34, 56..."></textarea></div><div class="mb-6"><label class="text-xs text-gray-400 uppercase font-bold">ငွေပမာဏ (အနည်းဆုံး ၅၀ ကျပ်)</label><input type="number" name="amount" id="betAmt" class="w-full p-3 bg-black/30 text-white font-bold focus:outline-none rounded-xl mt-2 border border-white/5" placeholder="50" required></div><button class="w-full py-4 rounded-xl gold-bg text-black font-bold text-lg">ထိုးမည် (CONFIRM)</button></form></div></div>
         <div id="voucherModal" class="fixed inset-0 z-[110] hidden flex items-center justify-center p-6"><div class="absolute inset-0 bg-black/90" onclick="closeVoucher()"></div><div class="relative w-full max-w-xs bg-white text-slate-900 rounded-lg overflow-hidden shadow-2xl slide-up"><div id="voucherCapture" class="bg-white"><div class="bg-slate-900 text-white p-3 text-center font-bold uppercase text-sm border-b-4 border-yellow-500">အောင်မြင်ပါသည်</div><div class="p-4 font-mono text-sm" id="voucherContent"></div></div><div class="p-3 bg-gray-100 text-center flex gap-2"><button onclick="saveVoucher()" class="flex-1 bg-blue-600 text-white text-xs font-bold py-2 rounded shadow">ဘောင်ချာသိမ်းမည်</button><button onclick="closeVoucher()" class="flex-1 text-xs font-bold text-slate-500 uppercase tracking-wide border border-slate-300 rounded py-2">ပိတ်မည်</button></div></div></div>
         <script>
-            // --- CONFIG ---
             const API = "https://api.thaistock2d.com/live";
             const SERVER_TODAY = "${SERVER_TODAY_KEY}";
             let lastM = "--"; let lastE = "--"; let firstLoad = true;
@@ -494,7 +491,6 @@ Deno.serve(async (req) => {
                 try {
                     const now = new Date();
                     const mins = now.getHours() * 60 + now.getMinutes(); 
-                    
                     const isLiveTime = (mins >= 570 && mins <= 721) || (mins >= 840 && mins <= 990);
                     if(isLiveTime && !rollTimer) startRolling();
 
@@ -517,7 +513,6 @@ Deno.serve(async (req) => {
                         const r200 = d.result[2]?.twod || "--"; 
                         let r430 = (d.result[3] || d.result[2])?.twod || "--";
                         
-                        // Safety: hide 4:30 result if too early (prevents 00 bug)
                         const h = new Date().getHours();
                         if(h < 16 && r430 === "00") r430 = "--";
                         
