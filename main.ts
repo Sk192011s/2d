@@ -22,20 +22,17 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     
     if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
 
-    const curHour = mmDate.getHours(); // 0-23
+    const curHour = mmDate.getHours();
     let m = "--", e = "--";
 
     if (data.result) {
         if (data.result[1] && data.result[1].twod) m = data.result[1].twod;
-        
-        // ညနေ ၄ နာရီ (16:00) ကျော်မှသာ ညနေ result ကို ယူမယ်
         if (curHour >= 16) {
             const ev = data.result[3] || data.result[2];
             if (ev && ev.twod) e = ev.twod;
         }
     }
 
-    // Database Read & Fix Logic
     const ex = await kv.get(["history", dateKey]);
     const old = ex.value as any || { morning: "--", evening: "--" };
     
@@ -43,24 +40,13 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     let saveE = old.evening;
     let needSave = false;
 
-    // Morning Update
     if (m !== "--" && m !== old.morning) { saveM = m; needSave = true; }
-
-    // Evening Update & 00 FIX
-    // အကယ်၍ Database မှာ "00" ဖြစ်နေပြီး၊ အချိန်က ၄ နာရီမထိုးသေးရင် "--" လို့ ပြန်ပြင်မယ်
-    if (old.evening === "00" && curHour < 16) { 
-        saveE = "--"; 
-        needSave = true; 
-    } else if (e !== "--" && e !== old.evening) {
-        // ပုံမှန် Update (အချိန်တန်လို့ ဂဏန်းထွက်လာရင်)
-        saveE = e;
-        needSave = true;
-    }
+    if (old.evening === "00" && curHour < 16) { saveE = "--"; needSave = true; } 
+    else if (e !== "--" && e !== old.evening) { saveE = e; needSave = true; }
 
     if (needSave) {
         await kv.set(["history", dateKey], { morning: saveM, evening: saveE, date: dateKey });
     }
-
   } catch (e) {}
 });
 
@@ -89,9 +75,9 @@ serve(async (req) => {
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
   <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;700&family=Roboto+Mono:wght@500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;700&family=Padauk:wght@400;700&family=Roboto+Mono:wght@500&display=swap" rel="stylesheet">
   <style>
-    body { font-family: 'Poppins', sans-serif; background: #0f172a; color: #e2e8f0; -webkit-tap-highlight-color: transparent; padding-bottom: 80px; }
+    body { font-family: 'Padauk', 'Poppins', sans-serif; background: #0f172a; color: #e2e8f0; -webkit-tap-highlight-color: transparent; padding-bottom: 80px; }
     .font-mono { font-family: 'Roboto Mono', monospace; }
     .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.05); }
     .gold-text { background: linear-gradient(to right, #bf953f, #fcf6ba, #b38728, #fbf5b7, #aa771c); -webkit-background-clip: text; color: transparent; }
@@ -122,15 +108,15 @@ serve(async (req) => {
             } else Swal.fire({icon:'error', title:'Failed'});
         } catch(e) { hideLoad(); Swal.fire({icon:'error', title:'Error'}); }
     }
-    function delBet(id) { Swal.fire({title:'Delete?', icon:'warning', showCancelButton:true, confirmButtonColor:'#d33'}).then(r => { if(r.isConfirmed) { showLoad(); const fd = new FormData(); fd.append('id', id); fetch('/admin/delete_bet', {method:'POST', body:fd}).then(res=>res.json()).then(d=>{ hideLoad(); location.reload(); }); } }); }
+    function delBet(id) { Swal.fire({title:'ဖျက်မလား?', icon:'warning', showCancelButton:true, confirmButtonColor:'#d33', confirmButtonText:'ဖျက်မည်', cancelButtonText:'မလုပ်တော့ပါ'}).then(r => { if(r.isConfirmed) { showLoad(); const fd = new FormData(); fd.append('id', id); fetch('/admin/delete_bet', {method:'POST', body:fd}).then(res=>res.json()).then(d=>{ hideLoad(); location.reload(); }); } }); }
   </script>`;
 
   const loaderHTML = `<div id="loader" class="fixed inset-0 bg-black/90 z-[9999] hidden flex items-center justify-center"><div class="loader w-10 h-10"></div></div>`;
   const navHTML = `
   <div class="fixed bottom-0 w-full glass border-t border-white/10 pb-safe flex justify-around items-center h-16 z-40">
-      <a href="/" onclick="showLoad()" class="nav-item ${url.pathname==='/'?'active':''} flex flex-col items-center text-gray-400 hover:text-yellow-500"><i class="fas fa-home text-lg"></i><span class="text-[10px] mt-1">Home</span></a>
-      <a href="/history" onclick="showLoad()" class="nav-item ${url.pathname==='/history'?'active':''} flex flex-col items-center text-gray-400 hover:text-yellow-500"><i class="fas fa-calendar-alt text-lg"></i><span class="text-[10px] mt-1">History</span></a>
-      <a href="/profile" onclick="showLoad()" class="nav-item ${url.pathname==='/profile'?'active':''} flex flex-col items-center text-gray-400 hover:text-yellow-500"><i class="fas fa-user-circle text-lg"></i><span class="text-[10px] mt-1">Profile</span></a>
+      <a href="/" onclick="showLoad()" class="nav-item ${url.pathname==='/'?'active':''} flex flex-col items-center text-gray-400 hover:text-yellow-500"><i class="fas fa-home text-lg"></i><span class="text-[10px] mt-1">ပင်မ</span></a>
+      <a href="/history" onclick="showLoad()" class="nav-item ${url.pathname==='/history'?'active':''} flex flex-col items-center text-gray-400 hover:text-yellow-500"><i class="fas fa-calendar-alt text-lg"></i><span class="text-[10px] mt-1">မှတ်တမ်း</span></a>
+      <a href="/profile" onclick="showLoad()" class="nav-item ${url.pathname==='/profile'?'active':''} flex flex-col items-center text-gray-400 hover:text-yellow-500"><i class="fas fa-user-circle text-lg"></i><span class="text-[10px] mt-1">အကောင့်</span></a>
   </div>`;
 
   // --- AUTH CHECK ---
@@ -182,19 +168,19 @@ serve(async (req) => {
     return new Response(null, { status: 303, headers: h });
   }
 
-  // --- LOGIN UI (If not logged in) ---
+  // --- LOGIN UI ---
   if (!currentUser) {
     return new Response(`<!DOCTYPE html><html><head><title>Login</title>${commonHead}</head><body class="flex items-center justify-center min-h-screen bg-[url('https://images.unsplash.com/photo-1605218427360-36390f8584b0')] bg-cover bg-center">
     <div class="absolute inset-0 bg-black/80"></div>${loaderHTML}
     <div class="relative z-10 w-full max-w-sm p-6">
       <div class="text-center mb-8"><i class="fas fa-crown text-5xl gold-text mb-2"></i><h1 class="text-3xl font-bold text-white tracking-widest">VIP 2D</h1><p class="text-gray-400 text-xs uppercase tracking-[0.2em]">Premium Betting</p></div>
       <div class="glass rounded-2xl p-6 shadow-2xl border-t border-white/10">
-        <div class="flex mb-6 bg-slate-800/50 rounded-lg p-1"><button onclick="switchTab('login')" id="tabLogin" class="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white transition-all">LOGIN</button><button onclick="switchTab('reg')" id="tabReg" class="flex-1 py-2 text-sm font-bold rounded-md text-gray-400 hover:text-white transition-all">REGISTER</button></div>
-        <form id="loginForm" action="/login" method="POST" onsubmit="showLoad()"><div class="space-y-4"><div class="relative"><i class="fas fa-user absolute left-3 top-3.5 text-gray-500"></i><input name="username" placeholder="Username" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><div class="relative"><i class="fas fa-lock absolute left-3 top-3.5 text-gray-500"></i><input name="password" type="password" placeholder="Password" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><label class="flex items-center text-xs text-gray-400"><input type="checkbox" name="remember" class="mr-2" checked> Remember Me (15 Days)</label><button class="w-full py-3 rounded-xl gold-bg font-bold shadow-lg text-black">LOGIN NOW</button></div></form>
-        <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoad()"><div class="space-y-4"><div class="relative"><i class="fas fa-user-plus absolute left-3 top-3.5 text-gray-500"></i><input name="username" placeholder="Create Username" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><div class="relative"><i class="fas fa-key absolute left-3 top-3.5 text-gray-500"></i><input name="password" type="password" placeholder="Create Password" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><label class="flex items-center text-xs text-gray-400"><input type="checkbox" name="remember" class="mr-2" checked> Remember Me (15 Days)</label><button class="w-full py-3 rounded-xl bg-slate-700 text-white font-bold hover:bg-slate-600">CREATE ACCOUNT</button></div></form>
+        <div class="flex mb-6 bg-slate-800/50 rounded-lg p-1"><button onclick="switchTab('login')" id="tabLogin" class="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white transition-all">အကောင့်ဝင်ရန်</button><button onclick="switchTab('reg')" id="tabReg" class="flex-1 py-2 text-sm font-bold rounded-md text-gray-400 hover:text-white transition-all">အကောင့်သစ်ဖွင့်</button></div>
+        <form id="loginForm" action="/login" method="POST" onsubmit="showLoad()"><div class="space-y-4"><div class="relative"><i class="fas fa-user absolute left-3 top-3.5 text-gray-500"></i><input name="username" placeholder="အမည် (Username)" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><div class="relative"><i class="fas fa-lock absolute left-3 top-3.5 text-gray-500"></i><input name="password" type="password" placeholder="စကားဝှက် (Password)" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><label class="flex items-center text-xs text-gray-400"><input type="checkbox" name="remember" class="mr-2" checked> မှတ်သားထားမည် (၁၅ ရက်)</label><button class="w-full py-3 rounded-xl gold-bg font-bold shadow-lg text-black">အကောင့်ဝင်မည်</button></div></form>
+        <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoad()"><div class="space-y-4"><div class="relative"><i class="fas fa-user-plus absolute left-3 top-3.5 text-gray-500"></i><input name="username" placeholder="အမည်အသစ်ပေးပါ" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><div class="relative"><i class="fas fa-key absolute left-3 top-3.5 text-gray-500"></i><input name="password" type="password" placeholder="စကားဝှက်အသစ်ပေးပါ" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><label class="flex items-center text-xs text-gray-400"><input type="checkbox" name="remember" class="mr-2" checked> မှတ်သားထားမည် (၁၅ ရက်)</label><button class="w-full py-3 rounded-xl bg-slate-700 text-white font-bold hover:bg-slate-600">အကောင့်ဖွင့်မည်</button></div></form>
       </div>
     </div>
-    <script> function switchTab(t) { const l=document.getElementById('loginForm'),r=document.getElementById('regForm'),tl=document.getElementById('tabLogin'),tr=document.getElementById('tabReg'); if(t==='login'){l.classList.remove('hidden');r.classList.add('hidden');tl.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tr.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";}else{l.classList.add('hidden');r.classList.remove('hidden');tr.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tl.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";} } const u=new URLSearchParams(location.search); if(u.get('error')) Swal.fire({icon:'error',title:'Error',text:'Invalid Login or Exists',background:'#1e293b',color:'#fff'}); </script></body></html>`, { headers: { "content-type": "text/html" } });
+    <script> function switchTab(t) { const l=document.getElementById('loginForm'),r=document.getElementById('regForm'),tl=document.getElementById('tabLogin'),tr=document.getElementById('tabReg'); if(t==='login'){l.classList.remove('hidden');r.classList.add('hidden');tl.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tr.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";}else{l.classList.add('hidden');r.classList.remove('hidden');tr.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tl.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";} } const u=new URLSearchParams(location.search); if(u.get('error')) Swal.fire({icon:'error',title:'မှားယွင်းနေသည်',text:'အမည် သို့မဟုတ် စကားဝှက် မှားယွင်းနေပါသည်',background:'#1e293b',color:'#fff'}); </script></body></html>`, { headers: { "content-type": "text/html" } });
   }
 
   // --- AUTHENTICATED ACTIONS (POST) ---
@@ -282,7 +268,39 @@ serve(async (req) => {
       
       let todayWin = 0, todayLose = 0;
       const bIter = kv.list({ prefix: ["bets"] });
-      for await (const e of bIter) { const b = e.value as any; if(b.user === currentUser && b.date === dateStr) { if(b.status === 'WIN') todayWin += (b.winAmount || 0); if(b.status === 'LOSE') todayLose += b.amount; } }
+      
+      // IMPROVED DATE CHECKING LOGIC
+      const now = new Date();
+      const todayFormatter = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Yangon", day: "numeric", month: "numeric", year: "numeric" });
+      const todayParts = todayFormatter.formatToParts(now);
+      const tDay = todayParts.find(p => p.type === "day")?.value;
+      const tMonth = todayParts.find(p => p.type === "month")?.value;
+      const tYear = todayParts.find(p => p.type === "year")?.value;
+
+      for await (const e of bIter) { 
+        const b = e.value as any; 
+        if(b.user === currentUser) { 
+            // Calculate date from ID (Timestamp) to be 100% sure
+            let isToday = false;
+            try {
+                const ts = parseInt(b.id.substring(0, 13)); // ID starts with timestamp
+                const bDate = new Date(ts);
+                const bParts = todayFormatter.formatToParts(bDate);
+                const bDay = bParts.find(p => p.type === "day")?.value;
+                const bMonth = bParts.find(p => p.type === "month")?.value;
+                const bYear = bParts.find(p => p.type === "year")?.value;
+                if(tDay===bDay && tMonth===bMonth && tYear===bYear) isToday = true;
+            } catch(e) {
+                // Fallback to string match
+                if(b.date === dateStr) isToday = true;
+            }
+
+            if(isToday) {
+                if(b.status === 'WIN') todayWin += (b.winAmount || 0); 
+                if(b.status === 'LOSE') todayLose += b.amount; 
+            }
+        } 
+      }
 
       return new Response(`<!DOCTYPE html><html><head><title>Profile</title>${commonHead}</head><body>${loaderHTML}${navHTML}
       <div class="p-6 max-w-md mx-auto space-y-4 pb-24">
@@ -295,19 +313,19 @@ serve(async (req) => {
             <div class="text-yellow-500 font-mono font-bold text-lg">${balance.toLocaleString()} Ks</div>
          </div>
          <div class="grid grid-cols-2 gap-2 text-center">
-            <div class="glass p-3 rounded-xl border-l-2 border-green-500"><div class="text-xs text-gray-400">Today Win</div><div class="font-bold text-green-400 text-sm">+${todayWin.toLocaleString()}</div></div>
-            <div class="glass p-3 rounded-xl border-l-2 border-red-500"><div class="text-xs text-gray-400">Today Loss</div><div class="font-bold text-red-400 text-sm">-${todayLose.toLocaleString()}</div></div>
+            <div class="glass p-3 rounded-xl border-l-2 border-green-500"><div class="text-xs text-gray-400">ဒီနေ့ နိုင်ငွေ</div><div class="font-bold text-green-400 text-sm">+${todayWin.toLocaleString()}</div></div>
+            <div class="glass p-3 rounded-xl border-l-2 border-red-500"><div class="text-xs text-gray-400">ဒီနေ့ ရှုံးငွေ</div><div class="font-bold text-red-400 text-sm">-${todayLose.toLocaleString()}</div></div>
          </div>
-         <div class="glass p-4 rounded-xl space-y-3"><h3 class="text-xs font-bold text-gray-400 uppercase">Contact Admin</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-900/40 p-2 rounded border border-blue-500/30 text-center"><div class="text-blue-400 text-xs">KPay</div><div class="font-bold select-all text-sm">${contact.kpay_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.kpay_name||''}</div></div><div class="bg-yellow-900/40 p-2 rounded border border-yellow-500/30 text-center"><div class="text-yellow-400 text-xs">Wave</div><div class="font-bold select-all text-sm">${contact.wave_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.wave_name||''}</div></div></div><a href="${contact.tele_link||'#'}" target="_blank" class="block w-full bg-blue-600 text-white text-center py-2 rounded font-bold"><i class="fab fa-telegram"></i> Telegram Channel</a></div>
-         <form action="/change_password" method="POST" class="glass p-4 rounded-xl flex gap-2" onsubmit="showLoad()"><input type="password" name="new_password" placeholder="New Password" class="input-dark text-sm" required><button class="bg-yellow-600 text-white px-4 rounded font-bold text-xs">CHANGE</button></form>
-         <div class="glass rounded-xl p-4"><h3 class="text-xs font-bold text-gray-400 uppercase mb-3">Top-Up History</h3><div class="space-y-2 h-48 overflow-y-auto">${txs.length?txs.map(t=>`<div class="flex justify-between items-center p-2 bg-slate-800 rounded border-l-2 border-green-500" onclick="showTx('${t.time}', '${t.amount}', '${t.type}')"><div><span class="text-xs text-gray-400 block">${t.time}</span><span class="text-[10px] text-blue-400 font-bold">Admin Top-up</span></div><div class="flex items-center gap-2"><span class="font-bold text-green-400">+${t.amount}</span><button onclick="delTx(event, '${t.id}')" class="text-gray-600 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button></div></div>`).join(''):'<div class="text-center text-xs text-gray-500">No transactions</div>'}</div></div>
-         <button onclick="doLogout()" class="block w-full text-center text-red-400 text-sm font-bold py-4">LOGOUT</button>
+         <div class="glass p-4 rounded-xl space-y-3"><h3 class="text-xs font-bold text-gray-400 uppercase">Admin ထံဆက်သွယ်ရန်</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-900/40 p-2 rounded border border-blue-500/30 text-center"><div class="text-blue-400 text-xs">KPay</div><div class="font-bold select-all text-sm">${contact.kpay_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.kpay_name||''}</div></div><div class="bg-yellow-900/40 p-2 rounded border border-yellow-500/30 text-center"><div class="text-yellow-400 text-xs">Wave</div><div class="font-bold select-all text-sm">${contact.wave_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.wave_name||''}</div></div></div><a href="${contact.tele_link||'#'}" target="_blank" class="block w-full bg-blue-600 text-white text-center py-2 rounded font-bold"><i class="fab fa-telegram"></i> Telegram Channel</a></div>
+         <form action="/change_password" method="POST" class="glass p-4 rounded-xl flex gap-2" onsubmit="showLoad()"><input type="password" name="new_password" placeholder="စကားဝှက်အသစ်" class="input-dark text-sm" required><button class="bg-yellow-600 text-white px-4 rounded font-bold text-xs whitespace-nowrap">ချိန်းမည်</button></form>
+         <div class="glass rounded-xl p-4"><h3 class="text-xs font-bold text-gray-400 uppercase mb-3">ငွေဖြည့်မှတ်တမ်း</h3><div class="space-y-2 h-48 overflow-y-auto">${txs.length?txs.map(t=>`<div class="flex justify-between items-center p-2 bg-slate-800 rounded border-l-2 border-green-500" onclick="showTx('${t.time}', '${t.amount}', '${t.type}')"><div><span class="text-xs text-gray-400 block">${t.time}</span><span class="text-[10px] text-blue-400 font-bold">Admin Top-up</span></div><div class="flex items-center gap-2"><span class="font-bold text-green-400">+${t.amount}</span><button onclick="delTx(event, '${t.id}')" class="text-gray-600 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button></div></div>`).join(''):'<div class="text-center text-xs text-gray-500">မှတ်တမ်း မရှိပါ</div>'}</div></div>
+         <button onclick="doLogout()" class="block w-full text-center text-red-400 text-sm font-bold py-4">အကောင့်ထွက်မည် (LOGOUT)</button>
       </div>
       <script>
         function upAv(i){ if(i.files&&i.files[0]){ const r=new FileReader(); r.onload=function(e){ const im=new Image(); im.src=e.target.result; im.onload=function(){ const c=document.createElement('canvas'); const x=c.getContext('2d'); c.width=150;c.height=150; x.drawImage(im,0,0,150,150); showLoad(); const fd=new FormData(); fd.append('avatar',c.toDataURL('image/jpeg',0.7)); fetch('/update_avatar',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{hideLoad();location.reload();}); }}; r.readAsDataURL(i.files[0]); }}
-        const u=new URLSearchParams(location.search); if(u.get('msg')==='pass_ok') Swal.fire({icon:'success',title:'Password Changed',background:'#1e293b',color:'#fff'});
-        function showTx(t, a, type) { Swal.fire({ title: 'Transaction', html: \`<div class="text-left">Type: <b>\${type}</b><br>Amount: <b class="text-green-400">\${a} Ks</b><br>Time: \${t}</div>\`, background:'#1e293b', color:'#fff' }); }
-        function delTx(e, id) { e.stopPropagation(); Swal.fire({title:'Delete Record?', icon:'warning', showCancelButton:true, confirmButtonColor:'#d33', background:'#1e293b', color:'#fff'}).then(r => { if(r.isConfirmed) { const fd = new FormData(); fd.append('id', id); fetch('/delete_transaction', {method:'POST', body:fd}).then(res=>res.json()).then(d=>{ if(d.status==='ok') location.reload(); }); } }); }
+        const u=new URLSearchParams(location.search); if(u.get('msg')==='pass_ok') Swal.fire({icon:'success',title:'အောင်မြင်သည်',text:'စကားဝှက်ပြောင်းလဲပြီးပါပြီ',background:'#1e293b',color:'#fff'});
+        function showTx(t, a, type) { Swal.fire({ title: 'ငွေဖြည့်မှတ်တမ်း', html: \`<div class="text-left">အမျိုးအစား: <b>\${type}</b><br>ပမာဏ: <b class="text-green-400">\${a} Ks</b><br>အချိန်: \${t}</div>\`, background:'#1e293b', color:'#fff' }); }
+        function delTx(e, id) { e.stopPropagation(); Swal.fire({title:'မှတ်တမ်းဖျက်မလား?', icon:'warning', showCancelButton:true, confirmButtonColor:'#d33', confirmButtonText:'ဖျက်မည်', cancelButtonText:'မလုပ်တော့ပါ', background:'#1e293b', color:'#fff'}).then(r => { if(r.isConfirmed) { const fd = new FormData(); fd.append('id', id); fetch('/delete_transaction', {method:'POST', body:fd}).then(res=>res.json()).then(d=>{ if(d.status==='ok') location.reload(); }); } }); }
       </script></body></html>`, { headers: {"content-type": "text/html"} });
   }
 
@@ -316,9 +334,9 @@ serve(async (req) => {
       for await (const e of kv.list({prefix:["history"]}, {reverse:true, limit:31})) hList.push(e.value);
       return new Response(`<!DOCTYPE html><html><head><title>2D History</title>${commonHead}</head><body>${loaderHTML}${navHTML}
       <div class="p-4 max-w-md mx-auto pt-4 pb-20">
-         <h2 class="text-xl font-bold text-white mb-4 text-center">Past Results</h2>
+         <h2 class="text-xl font-bold text-white mb-4 text-center">ထွက်ပြီးဂဏန်းမှတ်တမ်း</h2>
          <div class="glass rounded-xl overflow-hidden">
-            <div class="grid grid-cols-3 bg-slate-800 p-3 text-xs font-bold text-gray-400 text-center uppercase"><div>Date</div><div>12:01</div><div>04:30</div></div>
+            <div class="grid grid-cols-3 bg-slate-800 p-3 text-xs font-bold text-gray-400 text-center uppercase"><div>ရက်စွဲ</div><div>12:01</div><div>04:30</div></div>
             <div class="divide-y divide-gray-700">${hList.map(h=>`<div class="grid grid-cols-3 p-3 text-center items-center"><div class="text-xs text-gray-400">${h.date}</div><div class="font-bold text-lg text-white">${h.morning}</div><div class="font-bold text-lg text-yellow-500">${h.evening}</div></div>`).join('')}</div>
          </div>
       </div></body></html>`, { headers: {"content-type": "text/html"} });
@@ -348,7 +366,7 @@ serve(async (req) => {
         <nav class="glass fixed top-0 w-full z-50 px-4 py-3 flex justify-between items-center shadow-lg">
             <div class="flex items-center gap-2">
                <div class="w-8 h-8 rounded-full gold-bg flex items-center justify-center font-bold text-black text-sm border-2 border-white overflow-hidden">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : currentUser[0].toUpperCase()}</div>
-               <div><div class="text-[10px] text-gray-400 uppercase">Balance</div><div class="text-sm font-bold text-white font-mono">${balance.toLocaleString()} Ks</div></div>
+               <div><div class="text-[10px] text-gray-400 uppercase">လက်ကျန်ငွေ</div><div class="text-sm font-bold text-white font-mono">${balance.toLocaleString()} Ks</div></div>
             </div>
             ${isAdmin ? '<span class="bg-red-600 text-[10px] px-2 py-1 rounded font-bold">ADMIN</span>' : ''}
         </nav>
@@ -359,14 +377,14 @@ serve(async (req) => {
                 <div class="py-2"><div id="live_twod" class="text-7xl font-bold gold-text font-mono drop-shadow-lg tracking-tighter blink-live">--</div><div class="text-xs text-gray-500 mt-2 font-mono">Updated: <span id="live_time">--:--:--</span></div></div>
                 <div class="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5"><div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">12:01 PM</div><div class="font-bold text-lg" id="res_12">--</div></div><div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">04:30 PM</div><div class="font-bold text-lg" id="res_430">--</div></div></div>
             </div>
-            ${sys.tip ? `<div class="glass p-4 rounded-xl border-l-4 border-yellow-500 flex items-center gap-3"><div class="bg-yellow-500/20 p-2 rounded-full"><i class="fas fa-lightbulb text-yellow-500"></i></div><div class="flex-1"><div class="flex justify-between items-center text-[10px] text-gray-400 uppercase font-bold"><span>Daily Tip</span><span>${dateStr}</span></div><div class="font-bold text-sm text-white">${sys.tip}</div></div></div>` : ''}
-            ${!isAdmin ? `<button onclick="openBet()" class="w-full gold-bg p-4 rounded-2xl shadow-lg shadow-yellow-600/20 flex items-center justify-center gap-2 active:scale-95 transition-transform"><i class="fas fa-plus-circle text-xl"></i><span class="font-bold">BET NOW (ထိုးမည်)</span></button>` : ''}
+            ${sys.tip ? `<div class="glass p-4 rounded-xl border-l-4 border-yellow-500 flex items-center gap-3"><div class="bg-yellow-500/20 p-2 rounded-full"><i class="fas fa-lightbulb text-yellow-500"></i></div><div class="flex-1"><div class="flex justify-between items-center text-[10px] text-gray-400 uppercase font-bold"><span>တစ်နေ့တာ အကြံပြုချက်</span><span>${dateStr}</span></div><div class="font-bold text-sm text-white">${sys.tip}</div></div></div>` : ''}
+            ${!isAdmin ? `<button onclick="openBet()" class="w-full gold-bg p-4 rounded-2xl shadow-lg shadow-yellow-600/20 flex items-center justify-center gap-2 active:scale-95 transition-transform"><i class="fas fa-plus-circle text-xl"></i><span class="font-bold">ထိုးမည် (BET NOW)</span></button>` : ''}
             ${isAdmin ? `<div class="space-y-4"><div class="grid grid-cols-3 gap-2 text-center text-xs"><div class="glass p-2 rounded"><div class="text-green-400">Sale</div><div class="font-mono font-bold">${stats.sale.toLocaleString()}</div></div><div class="glass p-2 rounded"><div class="text-red-400">Payout</div><div class="font-mono font-bold">${stats.payout.toLocaleString()}</div></div><div class="glass p-2 rounded"><div class="text-blue-400">Profit</div><div class="font-mono font-bold">${(stats.sale-stats.payout).toLocaleString()}</div></div></div><div class="glass p-4 rounded-xl space-y-4"><h3 class="text-xs font-bold text-gray-400 uppercase">Management</h3><form action="/admin/payout" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><select name="session" class="input-dark text-xs"><option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option></select><input name="win_number" placeholder="Win" class="input-dark w-16 text-center"><button class="bg-red-600 text-white text-xs px-3 rounded font-bold">PAY</button></form><form action="/admin/topup" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><input name="username" placeholder="User" class="input-dark text-xs"><input name="amount" type="number" placeholder="Amt" class="input-dark w-20 text-xs"><button class="bg-green-600 text-white text-xs px-3 rounded font-bold">TOP</button></form><form action="/admin/block" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><input type="hidden" name="action" value="add"><select name="type" class="input-dark text-xs w-20"><option value="direct">One</option><option value="head">Head</option><option value="tail">Tail</option></select><input name="val" placeholder="Num" class="input-dark w-16 text-xs text-center"><button class="bg-gray-600 text-white text-xs px-2 rounded font-bold">BLK</button><button onclick="this.form.action.value='clear'" class="bg-red-900 text-white text-xs px-2 rounded font-bold">CLR</button></form><form action="/admin/settings" method="POST" onsubmit="adminSubmit(event)" class="space-y-2 border-t border-gray-700 pt-2"><div class="flex gap-2"><input name="rate" placeholder="Rate (80)" class="input-dark text-xs"><input name="tip" placeholder="Daily Tip" class="input-dark text-xs"></div><div class="flex gap-2"><input name="kpay_no" placeholder="Kpay" class="input-dark text-xs"><input name="kpay_name" placeholder="Kname" class="input-dark text-xs"></div><div class="flex gap-2"><input name="wave_no" placeholder="Wave" class="input-dark text-xs"><input name="wave_name" placeholder="Wname" class="input-dark text-xs"></div><input name="tele_link" placeholder="Tele Link" class="input-dark text-xs"><button class="w-full bg-blue-600 text-white text-xs py-2 rounded font-bold">UPDATE SETTINGS</button></form><form action="/admin/reset_pass" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2 border-t border-gray-700 pt-2"><input name="username" placeholder="User" class="input-dark text-xs"><input name="password" placeholder="New Pass" class="input-dark text-xs"><button class="bg-yellow-600 text-white text-xs px-2 rounded font-bold">RESET</button></form><form action="/admin/add_history" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2 border-t border-gray-700 pt-2"><input type="date" name="date" class="input-dark text-xs w-1/3"><input name="morning" placeholder="12:01" class="input-dark text-xs w-1/4"><input name="evening" placeholder="04:30" class="input-dark text-xs w-1/4"><button class="bg-purple-600 text-white text-xs px-2 rounded font-bold">ADD</button></form><div class="flex flex-wrap gap-1 mt-2">${blocks.map(b=>`<span class="text-[10px] bg-red-500/20 text-red-400 px-2 py-1 rounded">${b}</span>`).join('')}</div></div></div>` : ''}
-            <div class="glass rounded-xl p-4"><div class="flex justify-between items-center mb-3"><h3 class="font-bold text-gray-300 text-sm">Betting History</h3><div class="flex gap-2"><input id="searchBet" onkeyup="filterBets()" placeholder="Search Num..." class="bg-black/30 border border-gray-600 text-white text-xs rounded px-2 py-1 w-24 focus:outline-none focus:border-yellow-500">${!isAdmin?`<button onclick="clrH()" class="text-xs text-red-400 px-1"><i class="fas fa-trash"></i></button>`:''}</div></div><div class="space-y-2 max-h-60 overflow-y-auto pr-1" id="betListContainer">${bets.length === 0 ? '<div class="text-center text-gray-500 text-xs py-4">No data</div>' : ''}${bets.map(b => `<div class="bet-item flex justify-between items-center p-3 rounded-lg bg-black/20 border-l-2 ${b.status==='WIN'?'border-green-500':b.status==='LOSE'?'border-red-500':'border-yellow-500'}" data-num="${b.number}" data-id="${b.id}" data-date="${b.date}" data-status="${b.status}" data-win="${b.winAmount||0}" data-user="${b.user}"><div><div class="font-mono font-bold text-lg ${b.status==='WIN'?'text-green-400':b.status==='LOSE'?'text-red-400':'text-white'}">${b.number}</div><div class="text-[10px] text-gray-500">${b.time}</div></div><div class="flex items-center gap-2"><div class="text-right"><div class="font-mono text-sm font-bold">${b.amount.toLocaleString()}</div><div class="text-[10px] font-bold ${b.status==='WIN'?'text-green-500':b.status==='LOSE'?'text-red-500':'text-yellow-500'}">${b.status}</div></div>${isAdmin?`<button onclick="delBet('${b.id}')" class="text-red-500 text-xs bg-red-500/10 p-2 rounded hover:bg-red-500 hover:text-white"><i class="fas fa-trash"></i></button>`:''}</div></div>`).join('')}</div></div>
+            <div class="glass rounded-xl p-4"><div class="flex justify-between items-center mb-3"><h3 class="font-bold text-gray-300 text-sm">ထိုးထားသော စာရင်းများ</h3><div class="flex gap-2"><input id="searchBet" onkeyup="filterBets()" placeholder="ဂဏန်းရှာရန်..." class="bg-black/30 border border-gray-600 text-white text-xs rounded px-2 py-1 w-24 focus:outline-none focus:border-yellow-500">${!isAdmin?`<button onclick="clrH()" class="text-xs text-red-400 px-1"><i class="fas fa-trash"></i></button>`:''}</div></div><div class="space-y-2 max-h-60 overflow-y-auto pr-1" id="betListContainer">${bets.length === 0 ? '<div class="text-center text-gray-500 text-xs py-4">မှတ်တမ်း မရှိပါ</div>' : ''}${bets.map(b => `<div class="bet-item flex justify-between items-center p-3 rounded-lg bg-black/20 border-l-2 ${b.status==='WIN'?'border-green-500':b.status==='LOSE'?'border-red-500':'border-yellow-500'}" data-num="${b.number}" data-id="${b.id}" data-date="${b.date}" data-status="${b.status}" data-win="${b.winAmount||0}" data-user="${b.user}"><div><div class="font-mono font-bold text-lg ${b.status==='WIN'?'text-green-400':b.status==='LOSE'?'text-red-400':'text-white'}">${b.number}</div><div class="text-[10px] text-gray-500">${b.time}</div></div><div class="flex items-center gap-2"><div class="text-right"><div class="font-mono text-sm font-bold">${b.amount.toLocaleString()}</div><div class="text-[10px] font-bold ${b.status==='WIN'?'text-green-500':b.status==='LOSE'?'text-red-500':'text-yellow-500'}">${b.status}</div></div>${isAdmin?`<button onclick="delBet('${b.id}')" class="text-red-500 text-xs bg-red-500/10 p-2 rounded hover:bg-red-500 hover:text-white"><i class="fas fa-trash"></i></button>`:''}</div></div>`).join('')}</div></div>
         </div>
         ${navHTML}
-        <div id="betModal" class="fixed inset-0 z-[100] hidden"><div class="absolute inset-0 bg-black/80 backdrop-blur-sm" onclick="document.getElementById('betModal').classList.add('hidden')"></div><div class="absolute bottom-0 w-full bg-[#1e293b] rounded-t-3xl p-6 slide-up shadow-2xl border-t border-yellow-500/30"><div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-white">Place Bet</h2><button onclick="document.getElementById('betModal').classList.add('hidden')" class="text-gray-400 text-2xl">&times;</button></div><div class="flex gap-2 mb-4 overflow-x-auto pb-2 no-scrollbar"><button onclick="setMode('direct')" class="px-4 py-1 bg-yellow-500 text-black text-xs font-bold rounded-full whitespace-nowrap">Direct</button><button onclick="quickInput('brake')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">Brake</button><button onclick="quickInput('round')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">Double</button><button onclick="quickInput('head')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">Head</button><button onclick="quickInput('tail')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">Tail</button></div><form onsubmit="confirmBet(event)"><div class="bg-black/30 p-3 rounded-xl border border-white/5 mb-4"><textarea id="betNums" name="number" class="w-full bg-transparent text-lg font-mono font-bold text-white placeholder-gray-600 focus:outline-none resize-none h-20" placeholder="12, 34, 56..."></textarea></div><div class="mb-6"><label class="text-xs text-gray-400 uppercase font-bold">Amount</label><input type="number" name="amount" id="betAmt" class="w-full p-3 bg-black/30 text-white font-bold focus:outline-none rounded-xl mt-2 border border-white/5" placeholder="Min 50" required></div><button class="w-full py-4 rounded-xl gold-bg text-black font-bold text-lg">CONFIRM</button></form></div></div>
-        <div id="voucherModal" class="fixed inset-0 z-[110] hidden flex items-center justify-center p-6"><div class="absolute inset-0 bg-black/90" onclick="closeVoucher()"></div><div class="relative w-full max-w-xs bg-white text-slate-900 rounded-lg overflow-hidden shadow-2xl slide-up"><div id="voucherCapture" class="bg-white"><div class="bg-slate-900 text-white p-3 text-center font-bold uppercase text-sm border-b-4 border-yellow-500">Success</div><div class="p-4 font-mono text-sm" id="voucherContent"></div></div><div class="p-3 bg-gray-100 text-center flex gap-2"><button onclick="saveVoucher()" class="flex-1 bg-blue-600 text-white text-xs font-bold py-2 rounded shadow">Save Image</button><button onclick="closeVoucher()" class="flex-1 text-xs font-bold text-slate-500 uppercase tracking-wide border border-slate-300 rounded py-2">Close</button></div></div></div>
+        <div id="betModal" class="fixed inset-0 z-[100] hidden"><div class="absolute inset-0 bg-black/80 backdrop-blur-sm" onclick="document.getElementById('betModal').classList.add('hidden')"></div><div class="absolute bottom-0 w-full bg-[#1e293b] rounded-t-3xl p-6 slide-up shadow-2xl border-t border-yellow-500/30"><div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-white">ထိုးမည့်ဂဏန်းရွေးပါ</h2><button onclick="document.getElementById('betModal').classList.add('hidden')" class="text-gray-400 text-2xl">&times;</button></div><div class="flex gap-2 mb-4 overflow-x-auto pb-2 no-scrollbar"><button onclick="setMode('direct')" class="px-4 py-1 bg-yellow-500 text-black text-xs font-bold rounded-full whitespace-nowrap">တိုက်ရိုက်</button><button onclick="quickInput('brake')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ဘရိတ်</button><button onclick="quickInput('round')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">အခွေ</button><button onclick="quickInput('head')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ထိပ်စီး</button><button onclick="quickInput('tail')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">နောက်ပိတ်</button></div><form onsubmit="confirmBet(event)"><div class="bg-black/30 p-3 rounded-xl border border-white/5 mb-4"><textarea id="betNums" name="number" class="w-full bg-transparent text-lg font-mono font-bold text-white placeholder-gray-600 focus:outline-none resize-none h-20" placeholder="12, 34, 56..."></textarea></div><div class="mb-6"><label class="text-xs text-gray-400 uppercase font-bold">ငွေပမာဏ (အနည်းဆုံး ၅၀ ကျပ်)</label><input type="number" name="amount" id="betAmt" class="w-full p-3 bg-black/30 text-white font-bold focus:outline-none rounded-xl mt-2 border border-white/5" placeholder="50" required></div><button class="w-full py-4 rounded-xl gold-bg text-black font-bold text-lg">ထိုးမည် (CONFIRM)</button></form></div></div>
+        <div id="voucherModal" class="fixed inset-0 z-[110] hidden flex items-center justify-center p-6"><div class="absolute inset-0 bg-black/90" onclick="closeVoucher()"></div><div class="relative w-full max-w-xs bg-white text-slate-900 rounded-lg overflow-hidden shadow-2xl slide-up"><div id="voucherCapture" class="bg-white"><div class="bg-slate-900 text-white p-3 text-center font-bold uppercase text-sm border-b-4 border-yellow-500">အောင်မြင်ပါသည်</div><div class="p-4 font-mono text-sm" id="voucherContent"></div></div><div class="p-3 bg-gray-100 text-center flex gap-2"><button onclick="saveVoucher()" class="flex-1 bg-blue-600 text-white text-xs font-bold py-2 rounded shadow">ဘောင်ချာသိမ်းမည်</button><button onclick="closeVoucher()" class="flex-1 text-xs font-bold text-slate-500 uppercase tracking-wide border border-slate-300 rounded py-2">ပိတ်မည်</button></div></div></div>
         <script>
             const API="https://api.thaistock2d.com/live";
             async function upL(){try{
@@ -377,7 +395,6 @@ serve(async (req) => {
                     if(d.result[1])document.getElementById('res_12').innerText=d.result[1].twod||"--";
                     const ev=d.result[3]||d.result[2];
                     let eVal = ev ? ev.twod : "--";
-                    // CLIENT SIDE 00 FIX: If time < 4PM and val is 00, show --
                     if(h < 16 && eVal === "00") eVal = "--";
                     document.getElementById('res_430').innerText=eVal;
                 }
@@ -386,15 +403,15 @@ serve(async (req) => {
             function closeVoucher() { showLoad(); setTimeout(() => location.reload(), 100); }
             function openBet(){document.getElementById('betModal').classList.remove('hidden');}
             function quickInput(m){Swal.fire({title:m.toUpperCase(),input:'number',background:'#1e293b',color:'#fff',confirmButtonColor:'#eab308'}).then(r=>{if(r.isConfirmed&&r.value){const v=r.value;let a=[];if(m==='round')for(let i=0;i<10;i++)a.push(i+""+i);if(m==='head')for(let i=0;i<10;i++)a.push(v+i);if(m==='tail')for(let i=0;i<10;i++)a.push(i+v);if(m==='brake'){if(v.length===2)a=v[0]===v[1]?[v]:[v,v[1]+v[0]];}const t=document.getElementById('betNums');let c=t.value.trim();if(c&&!c.endsWith(','))c+=',';t.value=c+a.join(',');}});}
-            function confirmBet(e) { e.preventDefault(); const n = document.getElementById('betNums').value; const a = document.getElementById('betAmt').value; const count = n.split(',').filter(x=>x.trim()).length; const total = count * parseInt(a); Swal.fire({title: 'Confirm Bet?', html: \`Numbers: <b>\${count}</b><br>Amount: <b>\${a}</b><br>Total: <b class="text-yellow-400">\${total.toLocaleString()} Ks</b>\`, icon: 'question', showCancelButton: true, confirmButtonText: 'Submit', confirmButtonColor: '#eab308', background: '#1e293b', color: '#fff'}).then((result) => { if (result.isConfirmed) { submitBetData(e.target); } }); }
-            async function submitBetData(form) { showLoad(); const fd=new FormData(form); try { const r=await fetch('/bet',{method:'POST',body:fd}); const d=await r.json(); hideLoad(); if(d.status==='success'){ document.getElementById('betModal').classList.add('hidden'); const v=d.voucher; document.getElementById('voucherContent').innerHTML=\`<div class="text-center mb-2"><div class="font-bold">\${v.user}</div><div class="text-xs text-gray-500">\${v.time}</div></div><div class="border-y border-dashed border-gray-300 py-2 my-2 space-y-1 max-h-40 overflow-y-auto">\${v.nums.map(n=>\`<div class="flex justify-between"><span>\${n}</span><span>\${v.amt}</span></div>\`).join('')}</div><div class="flex justify-between font-bold text-lg"><span>Total</span><span>\${v.total}</span></div><div class="text-center text-xs font-bold text-yellow-600 mt-2">ကံကောင်းပါစေ (Good Luck)</div>\`; document.getElementById('voucherModal').classList.remove('hidden'); } else Swal.fire('Error',d.status,'error'); } catch(e){ hideLoad(); } }
+            function confirmBet(e) { e.preventDefault(); const n = document.getElementById('betNums').value; const a = document.getElementById('betAmt').value; const count = n.split(',').filter(x=>x.trim()).length; const total = count * parseInt(a); Swal.fire({title: 'အတည်ပြုပါ', html: \`အရေအတွက်: <b>\${count}</b><br>နှုန်း: <b>\${a}</b><br>စုစုပေါင်း: <b class="text-yellow-400">\${total.toLocaleString()} Ks</b>\`, icon: 'question', showCancelButton: true, confirmButtonText: 'ထိုးမည်', cancelButtonText:'မလုပ်တော့ပါ', confirmButtonColor: '#eab308', background: '#1e293b', color: '#fff'}).then((result) => { if (result.isConfirmed) { submitBetData(e.target); } }); }
+            async function submitBetData(form) { showLoad(); const fd=new FormData(form); try { const r=await fetch('/bet',{method:'POST',body:fd}); const d=await r.json(); hideLoad(); if(d.status==='success'){ document.getElementById('betModal').classList.add('hidden'); const v=d.voucher; document.getElementById('voucherContent').innerHTML=\`<div class="text-center mb-2"><div class="font-bold">\${v.user}</div><div class="text-xs text-gray-500">\${v.time}</div></div><div class="border-y border-dashed border-gray-300 py-2 my-2 space-y-1 max-h-40 overflow-y-auto">\${v.nums.map(n=>\`<div class="flex justify-between"><span>\${n}</span><span>\${v.amt}</span></div>\`).join('')}</div><div class="flex justify-between font-bold text-lg"><span>စုစုပေါင်း</span><span>\${v.total}</span></div><div class="text-center text-xs font-bold text-yellow-600 mt-2">ကံကောင်းပါစေ (Good Luck)</div>\`; document.getElementById('voucherModal').classList.remove('hidden'); } else if(d.status==='no_balance') Swal.fire('Error','လက်ကျန်ငွေမလုံလောက်ပါ','error'); else Swal.fire('Error',d.status,'error'); } catch(e){ hideLoad(); } }
             function saveVoucher() { const el = document.getElementById('voucherCapture'); html2canvas(el).then(canvas => { const link = document.createElement('a'); link.download = '2d_voucher_' + Date.now() + '.png'; link.href = canvas.toDataURL(); link.click(); }); }
-            function clrH(){ Swal.fire({title:'Clear History?',text:'Only completed bets will be removed.',icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',background:'#1e293b',color:'#fff'}).then(r=>{if(r.isConfirmed){showLoad();fetch('/clear_history',{method:'POST'}).then(res=>res.json()).then(d=>{hideLoad();Swal.fire({title:'Deleted!',icon:'success',timer:1500,showConfirmButton:false,background:'#1e293b',color:'#fff'}).then(()=>location.reload());});}}) }
-            function delBet(id) { Swal.fire({title:'Delete Bet?', icon:'warning', showCancelButton:true, confirmButtonColor:'#d33', background:'#1e293b', color:'#fff'}).then(r => { if(r.isConfirmed) { showLoad(); const fd = new FormData(); fd.append('id', id); fetch('/admin/delete_bet', {method:'POST', body:fd}).then(res=>res.json()).then(d=>{ hideLoad(); if(d.status==='success') location.reload(); else Swal.fire('Error','Failed','error'); }); } }); }
+            function clrH(){ Swal.fire({title:'ရှင်းလင်းမလား?',text:'ပြီးဆုံးပြီးသော မှတ်တမ်းများကိုသာ ဖျက်ပါမည်',icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'ရှင်းမည်',cancelButtonText:'မလုပ်တော့ပါ',background:'#1e293b',color:'#fff'}).then(r=>{if(r.isConfirmed){showLoad();fetch('/clear_history',{method:'POST'}).then(res=>res.json()).then(d=>{hideLoad();Swal.fire({title:'ရှင်းလင်းပြီးပါပြီ!',icon:'success',timer:1500,showConfirmButton:false,background:'#1e293b',color:'#fff'}).then(()=>location.reload());});}}) }
+            function delBet(id) { Swal.fire({title:'ဖျက်မလား?', icon:'warning', showCancelButton:true, confirmButtonColor:'#d33', confirmButtonText:'ဖျက်မည်', cancelButtonText:'မလုပ်တော့ပါ', background:'#1e293b', color:'#fff'}).then(r => { if(r.isConfirmed) { showLoad(); const fd = new FormData(); fd.append('id', id); fetch('/admin/delete_bet', {method:'POST', body:fd}).then(res=>res.json()).then(d=>{ hideLoad(); if(d.status==='success') location.reload(); else Swal.fire('Error','Failed','error'); }); } }); }
             window.onload = function() {
                 const today = "${dateStr}"; const currentUser = "${currentUser}"; const bets = document.querySelectorAll('.bet-item'); let totalWin = 0;
                 bets.forEach(b => { if(b.dataset.status === "WIN" && b.dataset.date === today && b.dataset.user === currentUser) { const id = b.dataset.id; if(!localStorage.getItem('seen_win_'+id)) { totalWin += parseInt(b.dataset.win); localStorage.setItem('seen_win_'+id, 'true'); } } });
-                if(totalWin > 0) { Swal.fire({ title: 'CONGRATULATIONS!', text: 'You won ' + totalWin.toLocaleString() + ' Ks today!', icon: 'success', background: '#1e293b', color: '#fff', confirmButtonColor: '#eab308', backdrop: \`rgba(0,0,123,0.4) url("https://media.tenor.com/Confetti/confetti.gif") left top no-repeat\` }); }
+                if(totalWin > 0) { Swal.fire({ title: 'ဂုဏ်ယူပါတယ်!', text: 'ဒီနေ့အတွက် စုစုပေါင်း ' + totalWin.toLocaleString() + ' ကျပ် ကံထူးထားပါတယ်!', icon: 'success', background: '#1e293b', color: '#fff', confirmButtonColor: '#eab308', backdrop: \`rgba(0,0,123,0.4) url("https://media.tenor.com/Confetti/confetti.gif") left top no-repeat\` }); }
             };
         </script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8" } });
   }
