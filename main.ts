@@ -2,7 +2,11 @@ import { crypto } from "https://deno.land/std@0.208.0/crypto/mod.ts";
 
 const kv = await Deno.openKv();
 
-// --- 2D HELPER FUNCTIONS ---
+// ==========================================
+// SECTION 1: GLOBAL HELPER FUNCTIONS
+// ==========================================
+
+// 1.1 Password Hashing
 async function hashPassword(p: string, s: string) {
   const data = new TextEncoder().encode(p + s);
   const hash = await crypto.subtle.digest("SHA-256", data);
@@ -11,6 +15,73 @@ async function hashPassword(p: string, s: string) {
 function generateId() { return crypto.randomUUID(); }
 function escapeHtml(unsafe: string) {
     return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+
+// 1.2 Football API Helpers (MOVED TO TOP)
+async function fetchServerURL(roomNum: any) {
+  try {
+    const res = await fetch(`https://json.vnres.co/room/${roomNum}/detail.json`, {
+        headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://socolivev.co/" }
+    });
+    const txt = await res.text();
+    const m = txt.match(/detail\((.*)\)/);
+    if (m) {
+      const js = JSON.parse(m[1]);
+      if (js.code === 200 && js.data && js.data.stream) {
+        return { m3u8: js.data.stream.m3u8, hdM3u8: js.data.stream.hdM3u8 };
+      }
+    }
+  } catch (e) { /* ignore */ }
+  return { m3u8: null, hdM3u8: null };
+}
+
+async function fetchSocoMatches(date: string, referer: string, agent: string) {
+  try {
+    const res = await fetch(`https://json.vnres.co/match/matches_${date}.json`, {
+      headers: { "User-Agent": agent, "Referer": referer }
+    });
+    const txt = await res.text();
+    const m = txt.match(/matches_\d+\((.*)\)/);
+    if (!m) return [];
+    
+    const js = JSON.parse(m[1]);
+    if (js.code !== 200) return [];
+
+    const now = Date.now();
+    const results = [];
+
+    for (const it of js.data) {
+      // FILTER: ONLY FOOTBALL (SportType 1)
+      if (it.sportType !== 1) continue;
+
+      const mt = it.matchTime;
+      let status;
+      if (now >= mt && now <= mt + (3*3600*1000)) status = "live";
+      else if (now > mt + (3*3600*1000)) status = "finished";
+      else status = "upcoming";
+
+      const servers = [];
+      if (status === "live" && it.anchors) {
+        for (const a of it.anchors) {
+          const room = a.anchor.roomNum;
+          const { m3u8, hdM3u8 } = await fetchServerURL(room);
+          if (m3u8) servers.push({ name: "Soco SD", stream_url: m3u8 });
+          if (hdM3u8) servers.push({ name: "Soco HD", stream_url: hdM3u8 });
+        }
+      }
+
+      results.push({
+        match_time: new Date(mt).toLocaleTimeString('en-US', { timeZone: 'Asia/Yangon', hour: '2-digit', minute: '2-digit', hour12: true }),
+        match_status: status,
+        home_team_name: it.homeName || it.hostName,
+        away_team_name: it.awayName || it.guestName,
+        league_name: it.leagueName || it.subCateName,
+        match_score: (it.homeScore !== undefined) ? `${it.homeScore} - ${it.awayScore}` : null,
+        servers
+      });
+    }
+    return results;
+  } catch (e) { return []; }
 }
 
 // --- 2D ADMIN SETUP ---
@@ -66,12 +137,11 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
 
   // ==========================================
-  // SECTION 1: FOOTBALL LOGIC & ROUTES
+  // FOOTBALL API & UI
   // ==========================================
 
   if (url.pathname === "/api/football/matches") {
     try {
-      // Vietnam Timezone for Socolive Date
       const getVNDate = (offset: number) => {
         const d = new Date();
         d.setDate(d.getDate() + offset);
@@ -87,6 +157,7 @@ Deno.serve(async (req) => {
 
       let allMatches: any[] = [];
       for (const d of dates) {
+        // Now fetching using the global function
         const matches = await fetchSocoMatches(d, referer, agent);
         allMatches = allMatches.concat(matches);
       }
@@ -101,7 +172,6 @@ Deno.serve(async (req) => {
     }
   }
 
-  // 1.2 Football UI Page
   if (url.pathname === "/football") {
     return new Response(`
     <!DOCTYPE html>
@@ -226,7 +296,7 @@ Deno.serve(async (req) => {
   }
 
   // ==========================================
-  // SECTION 2: 2D LOTTERY LOGIC & ROUTES
+  // SECTION 2: 2D LOTTERY LOGIC
   // ==========================================
 
   // --- ASSETS ---
@@ -572,70 +642,3 @@ Deno.serve(async (req) => {
 
   return new Response("404 Not Found", { status: 404 });
 });
-
-// --- FOOTBALL HELPER FUNCTIONS ---
-async function fetchServerURL(roomNum: any) {
-  try {
-    const res = await fetch(`https://json.vnres.co/room/${roomNum}/detail.json`, {
-        headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://socolivev.co/" }
-    });
-    const txt = await res.text();
-    const m = txt.match(/detail\((.*)\)/);
-    if (m) {
-      const js = JSON.parse(m[1]);
-      if (js.code === 200 && js.data && js.data.stream) {
-        return { m3u8: js.data.stream.m3u8, hdM3u8: js.data.stream.hdM3u8 };
-      }
-    }
-  } catch (e) { /* ignore */ }
-  return { m3u8: null, hdM3u8: null };
-}
-
-async function fetchSocoMatches(date: string, referer: string, agent: string) {
-  try {
-    const res = await fetch(`https://json.vnres.co/match/matches_${date}.json`, {
-      headers: { "User-Agent": agent, "Referer": referer }
-    });
-    const txt = await res.text();
-    const m = txt.match(/matches_\d+\((.*)\)/);
-    if (!m) return [];
-    
-    const js = JSON.parse(m[1]);
-    if (js.code !== 200) return [];
-
-    const now = Date.now();
-    const results = [];
-
-    for (const it of js.data) {
-      // FILTER: ONLY FOOTBALL (SportType 1)
-      if (it.sportType !== 1) continue;
-
-      const mt = it.matchTime;
-      let status;
-      if (now >= mt && now <= mt + (3*3600*1000)) status = "live";
-      else if (now > mt + (3*3600*1000)) status = "finished";
-      else status = "upcoming";
-
-      const servers = [];
-      if (status === "live" && it.anchors) {
-        for (const a of it.anchors) {
-          const room = a.anchor.roomNum;
-          const { m3u8, hdM3u8 } = await fetchServerURL(room);
-          if (m3u8) servers.push({ name: "Soco SD", stream_url: m3u8 });
-          if (hdM3u8) servers.push({ name: "Soco HD", stream_url: hdM3u8 });
-        }
-      }
-
-      results.push({
-        match_time: new Date(mt).toLocaleTimeString('en-US', { timeZone: 'Asia/Yangon', hour: '2-digit', minute: '2-digit', hour12: true }),
-        match_status: status,
-        home_team_name: it.homeName || it.hostName,
-        away_team_name: it.awayName || it.guestName,
-        league_name: it.leagueName || it.subCateName,
-        match_score: (it.homeScore !== undefined) ? `${it.homeScore} - ${it.awayScore}` : null,
-        servers
-      });
-    }
-    return results;
-  } catch (e) { return []; }
-}
