@@ -19,9 +19,7 @@ if (!adminCheck.value) {
     const s = generateId();
     const h = await hashPassword("admin123", s);
     await kv.set(["users", "admin"], { 
-        passwordHash: h, 
-        salt: s, 
-        balance: 1000000, 
+        passwordHash: h, salt: s, balance: 1000000, 
         joined: new Date().toISOString(), 
         avatar: "https://img.icons8.com/color/96/admin-settings-male.png" 
     });
@@ -37,7 +35,7 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     const mmDate = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
     const dateKey = mmDate.getFullYear() + "-" + String(mmDate.getMonth() + 1).padStart(2, '0') + "-" + String(mmDate.getDate()).padStart(2, '0');
     
-    // Fix: Only save if API date matches Today
+    // Check Date match to prevent wrong history
     if (!data.live || data.live.date !== dateKey) return;
     if (mmDate.getDay() === 0 || mmDate.getDay() === 6) return; 
 
@@ -45,6 +43,7 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
     let m = "--", e = "--";
 
     if (data.result) {
+        // Save only Main Closing Times (12:01 & 4:30) to Database
         if (data.result[1] && data.result[1].twod) m = data.result[1].twod;
         if (curHour >= 16) {
             const ev = data.result[3] || data.result[2];
@@ -141,7 +140,7 @@ Deno.serve(async (req) => {
   const currentUser = userCookie ? decodeURIComponent(userCookie.split("=")[1].trim()) : null;
   const isAdmin = currentUser === "admin";
 
-  // --- LOGOUT ACTION (Moved to Top Level to fix 404) ---
+  // --- LOGOUT ACTION (Fixed 404) ---
   if (url.pathname === "/logout") {
     const h = new Headers({ "Location": "/" });
     h.set("Set-Cookie", `user=; Path=/; Max-Age=0`);
@@ -180,7 +179,7 @@ Deno.serve(async (req) => {
       if (url.pathname === "/clear_history") { const iter = kv.list({ prefix: ["bets"] }); for await (const e of iter) { const b = e.value as any; if(b.user === currentUser && b.status !== "PENDING") await kv.delete(e.key); } return new Response(JSON.stringify({status:"ok"})); }
       if (url.pathname === "/delete_transaction") { const f = await req.formData(); const id = f.get("id")?.toString(); if(id) await kv.delete(["transactions", id]); return new Response(JSON.stringify({status:"ok"})); }
       
-      // BETTING ACTION
+      // BETTING
       if (url.pathname === "/bet") {
         const now = new Date(); const mm = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Yangon" }));
         const mins = mm.getHours() * 60 + mm.getMinutes();
@@ -282,7 +281,17 @@ Deno.serve(async (req) => {
             ${isAdmin ? '<span class="bg-red-600 text-[10px] px-2 py-1 rounded font-bold">ADMIN</span>' : ''}
         </nav>
         <div class="pt-20 px-4 pb-24 max-w-md mx-auto space-y-6">
-            <div class="glass rounded-3xl p-6 text-center relative overflow-hidden group"><div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-500 to-transparent opacity-50"></div><div class="flex justify-between text-xs text-gray-400 mb-2 font-mono"><span id="live_date">--</span><span class="text-red-500 animate-pulse font-bold">● LIVE</span></div><div class="py-2"><div id="live_twod" class="text-7xl font-bold gold-text font-mono drop-shadow-lg tracking-tighter blink-live">--</div><div class="text-xs text-gray-500 mt-2 font-mono">Updated: <span id="live_time">--:--:--</span></div></div><div class="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5"><div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">12:01 PM</div><div class="font-bold text-lg" id="res_12">--</div></div><div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">04:30 PM</div><div class="font-bold text-lg" id="res_430">--</div></div></div></div>
+            <div class="glass rounded-3xl p-6 text-center relative overflow-hidden group"><div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-500 to-transparent opacity-50"></div><div class="flex justify-between text-xs text-gray-400 mb-2 font-mono"><span id="live_date">--</span><span class="text-red-500 animate-pulse font-bold">● LIVE</span></div><div class="py-2"><div id="live_twod" class="text-7xl font-bold gold-text font-mono drop-shadow-lg tracking-tighter blink-live">--</div><div class="text-xs text-gray-500 mt-2 font-mono">Updated: <span id="live_time">--:--:--</span></div></div>
+            
+            <!-- 4 Times Results Grid -->
+            <div class="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5">
+                <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">09:30 AM</div><div class="font-bold text-lg text-yellow-500" id="res_930">--</div></div>
+                <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">12:01 PM</div><div class="font-bold text-lg text-white" id="res_12">--</div></div>
+                <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">02:00 PM</div><div class="font-bold text-lg text-yellow-500" id="res_200">--</div></div>
+                <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">04:30 PM</div><div class="font-bold text-lg text-white" id="res_430">--</div></div>
+            </div>
+            
+            </div>
             ${sys.tip ? `<div class="glass p-4 rounded-xl border-l-4 border-yellow-500 flex items-center gap-3"><div class="bg-yellow-500/20 p-2 rounded-full"><i class="fas fa-lightbulb text-yellow-500"></i></div><div class="flex-1"><div class="flex justify-between items-center text-[10px] text-gray-400 uppercase font-bold"><span>တစ်နေ့တာ အကြံပြုချက်</span><span>${dateStr}</span></div><div class="font-bold text-sm text-white">${sys.tip}</div></div></div>` : ''}
             ${!isAdmin ? `<button onclick="openBet()" class="w-full gold-bg p-4 rounded-2xl shadow-lg shadow-yellow-600/20 flex items-center justify-center gap-2 active:scale-95 transition-transform"><i class="fas fa-plus-circle text-xl"></i><span class="font-bold">ထိုးမည် (BET NOW)</span></button>` : ''}
             ${isAdmin ? `<div class="space-y-4"><div class="grid grid-cols-3 gap-2 text-center text-xs"><div class="glass p-2 rounded"><div class="text-green-400">Sale</div><div class="font-mono font-bold">${stats.sale.toLocaleString()}</div></div><div class="glass p-2 rounded"><div class="text-red-400">Payout</div><div class="font-mono font-bold">${stats.payout.toLocaleString()}</div></div><div class="glass p-2 rounded"><div class="text-blue-400">Profit</div><div class="font-mono font-bold">${(stats.sale-stats.payout).toLocaleString()}</div></div></div><div class="glass p-4 rounded-xl space-y-4"><h3 class="text-xs font-bold text-gray-400 uppercase">Management</h3><form action="/admin/payout" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><select name="session" class="input-dark text-xs"><option value="MORNING">12:01 PM</option><option value="EVENING">04:30 PM</option></select><input name="win_number" placeholder="Win" class="input-dark w-16 text-center"><button class="bg-red-600 text-white text-xs px-3 rounded font-bold">PAY</button></form><form action="/admin/topup" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><input name="username" placeholder="User" class="input-dark text-xs"><input name="amount" type="number" placeholder="Amt" class="input-dark w-20 text-xs"><button class="bg-green-600 text-white text-xs px-3 rounded font-bold">TOP</button></form><form action="/admin/block" method="POST" onsubmit="adminSubmit(event)" class="flex gap-2"><input type="hidden" name="action" value="add"><select name="type" class="input-dark text-xs w-20"><option value="direct">One</option><option value="head">Head</option><option value="tail">Tail</option></select><input name="val" placeholder="Num" class="input-dark w-16 text-xs text-center"><button class="bg-gray-600 text-white text-xs px-2 rounded font-bold">BLK</button><button onclick="this.form.action.value='clear'" class="bg-red-900 text-white text-xs px-2 rounded font-bold">CLR</button></form><form action="/admin/settings" method="POST" onsubmit="adminSubmit(event)" class="space-y-2 border-t border-gray-700 pt-2"><div class="flex gap-2"><input name="rate" placeholder="Rate (80)" class="input-dark text-xs"><input name="tip" placeholder="Daily Tip" class="input-dark text-xs"></div><div class="flex gap-2"><input name="kpay_no" placeholder="Kpay" class="input-dark text-xs"><input name="kpay_name" placeholder="Kname" class="input-dark text-xs"></div><div class="flex gap-2"><input name="wave_no" placeholder="Wave" class="input-dark text-xs"><input name="wave_name" placeholder="Wname" class="input-dark text-xs"></div><input name="tele_link" placeholder="Tele Link" class="input-dark text-xs"><button class="w-full bg-blue-600 text-white text-xs py-2 rounded font-bold">UPDATE SETTINGS</button></form><div class="border-t border-gray-700 pt-2 grid grid-cols-2 gap-2"><form action="/admin/add_history" method="POST" onsubmit="adminSubmit(event)" class="col-span-2 flex gap-2"><input type="date" name="date" class="input-dark text-xs w-1/3"><input name="morning" placeholder="12:01" class="input-dark text-xs w-1/4"><input name="evening" placeholder="04:30" class="input-dark text-xs w-1/4"><button class="bg-purple-600 text-white text-xs px-2 rounded font-bold">ADD</button></form><form action="/admin/clear_today_history" method="POST" onsubmit="adminSubmit(event)"><button class="w-full bg-red-800 text-white text-xs py-2 rounded font-bold">CLEAR TODAY HISTORY</button></form><form action="/admin/reset_pass" method="POST" onsubmit="adminSubmit(event)"><div class="flex gap-2"><input name="username" placeholder="User" class="input-dark text-xs"><input name="password" placeholder="Pass" class="input-dark text-xs"><button class="bg-yellow-600 text-white text-xs px-2 rounded font-bold">RST</button></div></form></div><div class="flex flex-wrap gap-1 mt-2">${blocks.map(b=>`<span class="text-[10px] bg-red-500/20 text-red-400 px-2 py-1 rounded">${b}</span>`).join('')}</div></div></div>` : ''}
@@ -292,36 +301,34 @@ Deno.serve(async (req) => {
         <div id="betModal" class="fixed inset-0 z-[100] hidden"><div class="absolute inset-0 bg-black/80 backdrop-blur-sm" onclick="document.getElementById('betModal').classList.add('hidden')"></div><div class="absolute bottom-0 w-full bg-[#1e293b] rounded-t-3xl p-6 slide-up shadow-2xl border-t border-yellow-500/30"><div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-white">ထိုးမည့်ဂဏန်းရွေးပါ</h2><button onclick="document.getElementById('betModal').classList.add('hidden')" class="text-gray-400 text-2xl">&times;</button></div><div class="flex gap-2 mb-4 overflow-x-auto pb-2 no-scrollbar"><button onclick="setMode('direct')" class="px-4 py-1 bg-yellow-500 text-black text-xs font-bold rounded-full whitespace-nowrap">တိုက်ရိုက်</button><button onclick="quickInput('R')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">R (အပြန်)</button><button onclick="quickInput('double')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">အပူး</button><button onclick="quickInput('brother')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ညီအစ်ကို</button><button onclick="quickInput('power')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ပါဝါ</button><button onclick="quickInput('head')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">ထိပ်</button><button onclick="quickInput('tail')" class="px-4 py-1 bg-slate-700 text-white text-xs font-bold rounded-full border border-slate-600">နောက်</button></div><form onsubmit="confirmBet(event)"><div class="bg-black/30 p-3 rounded-xl border border-white/5 mb-4"><textarea id="betNums" name="number" class="w-full bg-transparent text-lg font-mono font-bold text-white placeholder-gray-600 focus:outline-none resize-none h-20" placeholder="12, 34, 56..."></textarea></div><div class="mb-6"><label class="text-xs text-gray-400 uppercase font-bold">ငွေပမာဏ (အနည်းဆုံး ၅၀ ကျပ်)</label><input type="number" name="amount" id="betAmt" class="w-full p-3 bg-black/30 text-white font-bold focus:outline-none rounded-xl mt-2 border border-white/5" placeholder="50" required></div><button class="w-full py-4 rounded-xl gold-bg text-black font-bold text-lg">ထိုးမည် (CONFIRM)</button></form></div></div>
         <div id="voucherModal" class="fixed inset-0 z-[110] hidden flex items-center justify-center p-6"><div class="absolute inset-0 bg-black/90" onclick="closeVoucher()"></div><div class="relative w-full max-w-xs bg-white text-slate-900 rounded-lg overflow-hidden shadow-2xl slide-up"><div id="voucherCapture" class="bg-white"><div class="bg-slate-900 text-white p-3 text-center font-bold uppercase text-sm border-b-4 border-yellow-500">အောင်မြင်ပါသည်</div><div class="p-4 font-mono text-sm" id="voucherContent"></div></div><div class="p-3 bg-gray-100 text-center flex gap-2"><button onclick="saveVoucher()" class="flex-1 bg-blue-600 text-white text-xs font-bold py-2 rounded shadow">ဘောင်ချာသိမ်းမည်</button><button onclick="closeVoucher()" class="flex-1 text-xs font-bold text-slate-500 uppercase tracking-wide border border-slate-300 rounded py-2">ပိတ်မည်</button></div></div></div>
         <script>
-            const API="https://api.thaistock2d.com/live";
+            const API = "https://api.thaistock2d.com/live";
             let lastM = "--"; let lastE = "--"; let firstLoad = true;
-            async function upL(){try{
-                const r=await fetch(API);const d=await r.json();
-                const now = new Date(); const h = now.getHours();
-                const liveEl = document.getElementById('live_twod');
-                let shouldBlink = (d.live.status === '1');
-                if(d.live){
-                   liveEl.innerText=d.live.twod||"--";
-                   document.getElementById('live_time').innerText=d.live.time||"--:--:--";
-                   document.getElementById('live_date').innerText=d.live.date||"Today";
-                   if(d.live.twod === '--') shouldBlink = false;
-                }
-                if(d.result){
-                    const newM = d.result[1] ? d.result[1].twod : "--";
-                    const ev = d.result[3]||d.result[2];
-                    let newE = ev ? ev.twod : "--";
-                    if(h < 16 && newE === "00") newE = "--";
-                    document.getElementById('res_12').innerText = newM;
-                    document.getElementById('res_430').innerText = newE;
-                    if(h === 12 && newM === d.live.twod) shouldBlink = false;
-                    if(h >= 16 && newE === d.live.twod) shouldBlink = false;
-                    if(!firstLoad) {
-                        if(lastM === "--" && newM !== "--") Swal.fire({title:'မနက်ပိုင်း ဂဏန်းထွက်ပါပြီ!', text: newM, icon:'info', confirmButtonColor: '#eab308'});
-                        if(lastE === "--" && newE !== "--") Swal.fire({title:'ညနေပိုင်း ဂဏန်းထွက်ပါပြီ!', text: newE, icon:'info', confirmButtonColor: '#eab308'});
+            let rollTimer = null; const liveEl = document.getElementById('live_twod');
+            function startRolling() { if (rollTimer) return; liveEl.classList.add('text-yellow-400'); rollTimer = setInterval(() => { const rnd = Math.floor(Math.random() * 100).toString().padStart(2, '0'); liveEl.innerText = rnd; }, 80); }
+            function stopRolling(finalNum) { if (rollTimer) { clearInterval(rollTimer); rollTimer = null; } liveEl.classList.remove('text-yellow-400'); liveEl.innerText = finalNum; }
+            async function upL(){
+                try {
+                    const now = new Date(); const mins = now.getHours() * 60 + now.getMinutes(); const isLiveTime = (mins >= 570 && mins <= 721) || (mins >= 840 && mins <= 990);
+                    if(isLiveTime && !rollTimer) startRolling();
+                    const r = await fetch(API); const d = await r.json();
+                    if(d.live) {
+                        if (d.live.status === '1') { startRolling(); liveEl.classList.add('blink-live'); } else { stopRolling(d.live.twod || "--"); liveEl.classList.remove('blink-live'); }
+                        document.getElementById('live_time').innerText = d.live.time || "--:--:--"; document.getElementById('live_date').innerText = d.live.date || "Today";
                     }
-                    lastM = newM; lastE = newE; firstLoad = false;
-                }
-                if(shouldBlink) liveEl.classList.add('blink-live'); else liveEl.classList.remove('blink-live');
-            }catch(e){}}setInterval(upL,2000);upL();
+                    if(d.result){
+                        const h = now.getHours();
+                        const r930 = d.result[0]?.twod || "--"; const r12 = d.result[1]?.twod || "--"; const r200 = d.result[2]?.twod || "--"; let r430 = (d.result[3] || d.result[2])?.twod || "--";
+                        if(h < 16 && r430 === "00") r430 = "--";
+                        document.getElementById('res_930').innerText = r930; document.getElementById('res_12').innerText = r12; document.getElementById('res_200').innerText = r200; document.getElementById('res_430').innerText = r430;
+                        if(!firstLoad) {
+                            if(lastM === "--" && r12 !== "--") { stopRolling(r12); Swal.fire({title:'မနက်ပိုင်း ဂဏန်းထွက်ပါပြီ!', text: r12, icon:'success', confirmButtonColor: '#eab308'}); }
+                            if(lastE === "--" && r430 !== "--") { stopRolling(r430); Swal.fire({title:'ညနေပိုင်း ဂဏန်းထွက်ပါပြီ!', text: r430, icon:'success', confirmButtonColor: '#eab308'}); }
+                        }
+                        lastM = r12; lastE = r430; firstLoad = false;
+                    }
+                } catch(e) {}
+            }
+            setInterval(upL, 2000); upL();
             function filterBets() { const v = document.getElementById('searchBet').value.trim(); document.querySelectorAll('.bet-item').forEach(i => { i.style.display = i.getAttribute('data-num').includes(v) ? 'flex' : 'none'; }); }
             function closeVoucher() { showLoad(); setTimeout(() => location.reload(), 100); }
             function openBet(){document.getElementById('betModal').classList.remove('hidden');}
