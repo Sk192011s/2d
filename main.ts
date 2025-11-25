@@ -63,11 +63,10 @@ Deno.cron("Save History", "*/2 * * * *", async () => {
 });
 
 // ==========================================
-// 2. FOOTBALL SYSTEM HELPERS (ISOLATED)
+// 2. FOOTBALL SYSTEM HELPERS
 // ==========================================
 async function getFootballData() {
     try {
-        // 1. Get Dates (Yesterday, Today, Tomorrow) in Vietnam Time
         const getVNDate = (offset: number) => {
             const d = new Date();
             d.setDate(d.getDate() + offset);
@@ -80,12 +79,11 @@ async function getFootballData() {
         const dates = [getVNDate(-1), getVNDate(0), getVNDate(1)];
         let allMatches: any[] = [];
 
-        // 2. Fetch Loop
         for (const date of dates) {
             const url = `https://json.vnres.co/match/matches_${date}.json`;
             const res = await fetch(url, {
                 headers: {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                    "User-Agent": "Mozilla/5.0",
                     "Referer": "https://socolivev.co/",
                     "Origin": "https://socolivev.co"
                 }
@@ -93,8 +91,6 @@ async function getFootballData() {
             
             if (!res.ok) continue;
             const txt = await res.text();
-            
-            // Extract JSON from JSONP (matches_2024(...))
             const match = txt.match(/matches_\d+\((.*)\)/);
             if (!match) continue;
 
@@ -103,18 +99,16 @@ async function getFootballData() {
 
             const now = Date.now();
 
-            // 3. Process Matches
             for (const it of json.data) {
-                if (it.sportType !== 1) continue; // Football only
+                if (it.sportType !== 1) continue; 
 
-                const mt = it.matchTime; // Timestamp
-                const duration = 3 * 60 * 60 * 1000; // 3 Hours window
+                const mt = it.matchTime; 
+                const duration = 3 * 60 * 60 * 1000;
                 let status = "upcoming";
                 
                 if (now >= mt && now <= mt + duration) status = "live";
                 else if (now > mt + duration) status = "finished";
 
-                // 4. Get Stream Links (Only if Live)
                 const servers = [];
                 if (status === "live" && it.anchors) {
                     for (const anchor of it.anchors) {
@@ -148,9 +142,7 @@ async function getFootballData() {
                 });
             }
         }
-        // Sort: Live -> Upcoming
         return allMatches.sort((a, b) => (a.status === 'live' ? -1 : 1));
-
     } catch (e) {
         console.error("Football Error:", e);
         return [];
@@ -164,7 +156,7 @@ async function getFootballData() {
 Deno.serve(async (req) => {
   const url = new URL(req.url);
 
-  // --- FOOTBALL API ENDPOINT ---
+  // --- FOOTBALL API ---
   if (url.pathname === "/api/football/matches") {
       const matches = await getFootballData();
       return new Response(JSON.stringify(matches), {
@@ -172,7 +164,7 @@ Deno.serve(async (req) => {
       });
   }
 
-  // --- FOOTBALL UI PAGE ---
+  // --- FOOTBALL UI ---
   if (url.pathname === "/football") {
       return new Response(`
       <!DOCTYPE html>
@@ -198,15 +190,12 @@ Deno.serve(async (req) => {
           <h1 class="text-xl font-bold text-center mb-6 text-green-400 fixed top-0 left-0 w-full bg-[#0f172a]/90 backdrop-blur py-4 z-40 shadow-lg">
               ⚽ Football Live (MM Time)
           </h1>
-
           <div id="player-container" class="hidden sticky top-16 z-50 mb-4 bg-black rounded-lg overflow-hidden border border-gray-600 shadow-2xl">
               <video id="video" controls class="w-full aspect-video" autoplay></video>
               <button onclick="closePlayer()" class="w-full bg-red-600 text-white text-xs font-bold py-2">Close Player</button>
           </div>
-
           <div id="loading" class="text-center py-10 text-gray-400"><i class="fas fa-circle-notch fa-spin text-2xl mb-2"></i><br>ပွဲစဉ်များကို ရှာဖွေနေပါသည်...</div>
           <div id="match-list" class="space-y-3"></div>
-
           <script>
               async function load() {
                   try {
@@ -214,90 +203,30 @@ Deno.serve(async (req) => {
                       const data = await res.json();
                       document.getElementById('loading').style.display = 'none';
                       const list = document.getElementById('match-list');
-                      
-                      if (data.length === 0) {
-                          list.innerHTML = '<div class="text-center text-gray-500 mt-10">လက်ရှိ ဘောလုံးပွဲများ မရှိသေးပါ</div>';
-                          return;
-                      }
-
+                      if (data.length === 0) { list.innerHTML = '<div class="text-center text-gray-500 mt-10">လက်ရှိ ဘောလုံးပွဲများ မရှိသေးပါ</div>'; return; }
                       data.forEach(m => {
                           const isLive = m.status === 'live';
-                          const statusBadge = isLive 
-                              ? '<span class="text-red-500 font-bold text-[10px] flex items-center gap-1"><span class="live-dot"></span> LIVE</span>' 
-                              : '<span class="text-gray-500 text-[10px]">' + m.time + '</span>';
-                          
+                          const statusBadge = isLive ? '<span class="text-red-500 font-bold text-[10px] flex items-center gap-1"><span class="live-dot"></span> LIVE</span>' : '<span class="text-gray-500 text-[10px]">' + m.time + '</span>';
                           let btns = '';
-                          if (m.servers.length > 0) {
-                              m.servers.forEach(s => {
-                                  const col = s.name.includes('HD') ? 'bg-red-600' : 'bg-blue-600';
-                                  btns += \`<button onclick="play('\${s.url}')" class="\${col} text-white text-[10px] px-3 py-1.5 rounded shadow hover:opacity-80 mr-2 font-bold"><i class="fas fa-play"></i> \${s.name}</button>\`;
-                              });
-                          } else if (isLive) {
-                              btns = '<span class="text-[10px] text-yellow-500 animate-pulse">Link ရှာနေဆဲ...</span>';
-                          }
-
-                          const html = \`
-                              <div class="glass rounded-xl p-3 shadow-lg">
-                                  <div class="flex justify-between items-center mb-2">
-                                      <span class="text-[10px] text-gray-400 truncate w-2/3 uppercase">\${m.league}</span>
-                                      \${statusBadge}
-                                  </div>
-                                  <div class="flex justify-between items-center text-center">
-                                      <div class="w-1/3 flex flex-col items-center">
-                                          <img src="\${m.home_icon}" class="w-8 h-8 mb-1 bg-white/10 rounded-full p-1">
-                                          <span class="text-xs font-bold truncate w-full">\${m.home}</span>
-                                      </div>
-                                      <div class="w-1/3 text-xl font-bold text-yellow-400 font-mono">\${m.score}</div>
-                                      <div class="w-1/3 flex flex-col items-center">
-                                          <img src="\${m.away_icon}" class="w-8 h-8 mb-1 bg-white/10 rounded-full p-1">
-                                          <span class="text-xs font-bold truncate w-full">\${m.away}</span>
-                                      </div>
-                                  </div>
-                                  <div class="text-center mt-3 pt-2 border-t border-white/5">
-                                      \${btns}
-                                  </div>
-                              </div>
-                          \`;
+                          if (m.servers.length > 0) { m.servers.forEach(s => { const col = s.name.includes('HD') ? 'bg-red-600' : 'bg-blue-600'; btns += \`<button onclick="play('\${s.url}')" class="\${col} text-white text-[10px] px-3 py-1.5 rounded shadow hover:opacity-80 mr-2 font-bold"><i class="fas fa-play"></i> \${s.name}</button>\`; }); } else if (isLive) { btns = '<span class="text-[10px] text-yellow-500 animate-pulse">Link ရှာနေဆဲ...</span>'; }
+                          const html = \`<div class="glass rounded-xl p-3 shadow-lg"><div class="flex justify-between items-center mb-2"><span class="text-[10px] text-gray-400 truncate w-2/3 uppercase">\${m.league}</span>\${statusBadge}</div><div class="flex justify-between items-center text-center"><div class="w-1/3 flex flex-col items-center"><img src="\${m.home_icon}" class="w-8 h-8 mb-1 bg-white/10 rounded-full p-1"><span class="text-xs font-bold truncate w-full">\${m.home}</span></div><div class="w-1/3 text-xl font-bold text-yellow-400 font-mono">\${m.score}</div><div class="w-1/3 flex flex-col items-center"><img src="\${m.away_icon}" class="w-8 h-8 mb-1 bg-white/10 rounded-full p-1"><span class="text-xs font-bold truncate w-full">\${m.away}</span></div></div><div class="text-center mt-3 pt-2 border-t border-white/5">\${btns}</div></div>\`;
                           list.innerHTML += html;
                       });
                   } catch (e) { document.getElementById('loading').innerText = "Error: " + e.message; }
               }
-
-              function play(url) {
-                  document.getElementById('player-container').classList.remove('hidden');
-                  const vid = document.getElementById('video');
-                  if (Hls.isSupported()) {
-                      const hls = new Hls();
-                      hls.loadSource(url);
-                      hls.attachMedia(vid);
-                      hls.on(Hls.Events.MANIFEST_PARSED, () => vid.play());
-                  } else if (vid.canPlayType('application/vnd.apple.mpegurl')) {
-                      vid.src = url;
-                      vid.play();
-                  }
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-              function closePlayer() {
-                  const vid = document.getElementById('video');
-                  vid.pause(); vid.src = "";
-                  document.getElementById('player-container').classList.add('hidden');
-              }
+              function play(url) { document.getElementById('player-container').classList.remove('hidden'); const vid = document.getElementById('video'); if (Hls.isSupported()) { const hls = new Hls(); hls.loadSource(url); hls.attachMedia(vid); hls.on(Hls.Events.MANIFEST_PARSED, () => vid.play()); } else if (vid.canPlayType('application/vnd.apple.mpegurl')) { vid.src = url; vid.play(); } window.scrollTo({ top: 0, behavior: 'smooth' }); }
+              function closePlayer() { const vid = document.getElementById('video'); vid.pause(); vid.src = ""; document.getElementById('player-container').classList.add('hidden'); }
               load();
           </script>
       </body></html>`, { headers: { "Content-Type": "text/html" } });
   }
 
   // ==========================================
-  // 4. 2D SYSTEM ROUTES (UNCHANGED)
+  // 4. 2D SYSTEM ROUTES
   // ==========================================
 
-  // --- ASSETS ---
   if (url.pathname === "/manifest.json") {
-      return new Response(JSON.stringify({ 
-          name: "VIP 2D", short_name: "VIP 2D", start_url: "/", display: "standalone", 
-          background_color: "#0f172a", theme_color: "#0f172a", 
-          icons: [{ src: "https://img.icons8.com/color/192/shop.png", sizes: "192x192", type: "image/png" }] 
-      }), { headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ name: "VIP 2D", short_name: "VIP 2D", start_url: "/", display: "standalone", background_color: "#0f172a", theme_color: "#0f172a", icons: [{ src: "https://img.icons8.com/color/192/shop.png", sizes: "192x192", type: "image/png" }] }), { headers: { "content-type": "application/json" } });
   }
   if (url.pathname === "/sw.js") {
       return new Response(`self.addEventListener('install',e=>e.waitUntil(caches.open('v2d-v1').then(c=>c.addAll(['/','/manifest.json']))));self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>caches.match(e.request))));`, { headers: { "content-type": "application/javascript" } });
@@ -336,6 +265,14 @@ Deno.serve(async (req) => {
     .nav-item.active i { transform: translateY(-5px); transition: 0.3s; }
     .blink-live { animation: blinker 1.5s linear infinite; }
     @keyframes blinker { 50% { opacity: 0.3; } }
+    
+    /* NEW: Slide Up Animation for Number Change */
+    .slide-up-anim { animation: slideUpNumber 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+    @keyframes slideUpNumber {
+        0% { transform: translateY(50%); opacity: 0; }
+        100% { transform: translateY(0); opacity: 1; }
+    }
+    
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
@@ -354,6 +291,28 @@ Deno.serve(async (req) => {
                 else Swal.fire({icon:'success', title:'Success', timer:1000, showConfirmButton:false}).then(()=>location.reload());
             } else Swal.fire({icon:'error', title:'Failed'});
         } catch(e) { hideLoad(); Swal.fire({icon:'error', title:'Error'}); }
+    }
+    
+    // NEW: Real-time Clock Function
+    function startClock() {
+        const tEl = document.getElementById('live_time');
+        setInterval(() => {
+           const now = new Date();
+           // Myanmar Time Offset is +6:30, but let's stick to local for smooth seconds or adjust if needed.
+           // To keep it simple and ticking every second:
+           tEl.innerText = "Updating at " + now.toLocaleTimeString('en-US', { hour12: true });
+        }, 1000);
+    }
+    
+    // NEW: Animation Helper
+    function updateNumberWithAnimation(newVal) {
+        const el = document.getElementById('live_twod');
+        if (el.innerText !== newVal) {
+            el.classList.remove('slide-up-anim');
+            void el.offsetWidth; // Trigger reflow
+            el.innerText = newVal;
+            el.classList.add('slide-up-anim');
+        }
     }
   </script>`;
 
@@ -376,6 +335,7 @@ Deno.serve(async (req) => {
     return new Response(null, { status: 303, headers: h });
   }
 
+  // --- POST HANDLERS ---
   if (req.method === "POST") {
       if (url.pathname === "/register") {
         const form = await req.formData(); const u = form.get("username")?.toString().trim(); const p = form.get("password")?.toString(); const remember = form.get("remember");
@@ -521,7 +481,7 @@ Deno.serve(async (req) => {
                 <i class="fas fa-chevron-right text-gray-500 group-hover:text-white transition"></i>
             </a>
 
-            <div class="glass rounded-3xl p-6 text-center relative overflow-hidden group"><div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-500 to-transparent opacity-50"></div><div class="flex justify-between text-xs text-gray-400 mb-2 font-mono"><span id="live_date">--</span><span class="text-red-500 animate-pulse font-bold">● LIVE</span></div><div class="py-2"><div id="live_twod" class="text-7xl font-bold gold-text font-mono drop-shadow-lg tracking-tighter blink-live">--</div><div class="text-xs text-gray-500 mt-2 font-mono">Updated: <span id="live_time">--:--:--</span></div></div>
+            <div class="glass rounded-3xl p-6 text-center relative overflow-hidden group"><div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-500 to-transparent opacity-50"></div><div class="flex justify-between text-xs text-gray-400 mb-2 font-mono"><span id="live_date">--</span><span class="text-red-500 animate-pulse font-bold">● LIVE</span></div><div class="py-2"><div id="live_twod" class="text-7xl font-bold gold-text font-mono drop-shadow-lg tracking-tighter blink-live">--</div><div class="text-xs text-gray-500 mt-2 font-mono" id="live_time">--:--:--</div></div>
             
             <div class="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5">
                 <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">09:30 AM</div><div class="font-bold text-lg text-yellow-500" id="res_930">--</div></div>
@@ -543,61 +503,65 @@ Deno.serve(async (req) => {
             const API = "https://api.thaistock2d.com/live";
             const SERVER_TODAY = "${SERVER_TODAY_KEY}";
             let lastM = "--"; let lastE = "--"; let firstLoad = true;
-            let rollTimer = null; const liveEl = document.getElementById('live_twod');
-
-            function startRolling() { if (rollTimer) return; liveEl.classList.add('text-yellow-400'); rollTimer = setInterval(() => { const rnd = Math.floor(Math.random() * 100).toString().padStart(2, '0'); liveEl.innerText = rnd; }, 80); }
-            function stopRolling(finalNum) { if (rollTimer) { clearInterval(rollTimer); rollTimer = null; } liveEl.classList.remove('text-yellow-400'); liveEl.innerText = finalNum; }
+            let rollTimer = null; 
             
-            async function upL(){
+            // START CLOCK
+            startClock();
+
+            function upL(){
                 try {
-                    const now = new Date();
-                    const mins = now.getHours() * 60 + now.getMinutes(); 
-                    const isLiveTime = (mins >= 570 && mins <= 721) || (mins >= 840 && mins <= 990);
-                    if(isLiveTime && !rollTimer) startRolling();
-
-                    const r = await fetch(API); const d = await r.json();
-                    
-                    if (d.live && d.live.date !== SERVER_TODAY) {
-                        stopRolling("--");
-                        document.getElementById('res_930').innerText = "--";
-                        document.getElementById('res_12').innerText = "--";
-                        document.getElementById('res_200').innerText = "--";
-                        document.getElementById('res_430').innerText = "--";
-                        liveEl.classList.remove('blink-live');
-                        document.getElementById('live_date').innerText = SERVER_TODAY; 
-                        return;
-                    }
-
-                    if(d.result){
-                        const r930 = d.result[0]?.twod || "--"; 
-                        const r12 = d.result[1]?.twod || "--"; 
-                        const r200 = d.result[2]?.twod || "--"; 
-                        let r430 = (d.result[3] || d.result[2])?.twod || "--";
-                        
-                        const h = new Date().getHours();
-                        if(h < 16 && r430 === "00") r430 = "--";
-                        
-                        document.getElementById('res_930').innerText = r930; 
-                        document.getElementById('res_12').innerText = r12; 
-                        document.getElementById('res_200').innerText = r200; 
-                        document.getElementById('res_430').innerText = r430;
-                        
-                        if(d.live) {
-                            if (d.live.status === '1') { startRolling(); liveEl.classList.add('blink-live'); } 
-                            else { stopRolling(d.live.twod || "--"); liveEl.classList.remove('blink-live'); }
-                            document.getElementById('live_time').innerText = d.live.time || "--:--:--"; 
-                            document.getElementById('live_date').innerText = d.live.date;
+                    fetch(API).then(r => r.json()).then(d => {
+                        // Strict Date Check
+                        if (d.live && d.live.date !== SERVER_TODAY) {
+                            updateNumberWithAnimation("--");
+                            document.getElementById('res_930').innerText = "--";
+                            document.getElementById('res_12').innerText = "--";
+                            document.getElementById('res_200').innerText = "--";
+                            document.getElementById('res_430').innerText = "--";
+                            document.getElementById('live_date').innerText = SERVER_TODAY; 
+                            return;
                         }
 
-                        if(!firstLoad) {
-                            if(lastM === "--" && r12 !== "--") { stopRolling(r12); Swal.fire({title:'မနက်ပိုင်း ဂဏန်းထွက်ပါပြီ!', text: r12, icon:'success', confirmButtonColor: '#eab308'}); }
-                            if(lastE === "--" && r430 !== "--") { stopRolling(r430); Swal.fire({title:'ညနေပိုင်း ဂဏန်းထွက်ပါပြီ!', text: r430, icon:'success', confirmButtonColor: '#eab308'}); }
+                        // Data
+                        if(d.result){
+                            const r930 = d.result[0]?.twod || "--"; 
+                            const r12 = d.result[1]?.twod || "--"; 
+                            const r200 = d.result[2]?.twod || "--"; 
+                            let r430 = (d.result[3] || d.result[2])?.twod || "--";
+                            const h = new Date().getHours();
+                            if(h < 16 && r430 === "00") r430 = "--";
+                            
+                            document.getElementById('res_930').innerText = r930; 
+                            document.getElementById('res_12').innerText = r12; 
+                            document.getElementById('res_200').innerText = r200; 
+                            document.getElementById('res_430').innerText = r430;
+                            
+                            // Live Number
+                            if(d.live) {
+                                document.getElementById('live_date').innerText = d.live.date;
+                                if (d.live.status === '1') { 
+                                    // While live, show from API directly (it changes often)
+                                    // or implement rolling if you prefer. 
+                                    // Here we use simple update with animation
+                                    updateNumberWithAnimation(d.live.twod || "--");
+                                    document.getElementById('live_twod').classList.add('blink-live');
+                                } else { 
+                                    updateNumberWithAnimation(d.live.twod || "--");
+                                    document.getElementById('live_twod').classList.remove('blink-live'); 
+                                }
+                            }
+
+                            if(!firstLoad) {
+                                if(lastM === "--" && r12 !== "--") { Swal.fire({title:'မနက်ပိုင်း ဂဏန်းထွက်ပါပြီ!', text: r12, icon:'success', confirmButtonColor: '#eab308'}); }
+                                if(lastE === "--" && r430 !== "--") { Swal.fire({title:'ညနေပိုင်း ဂဏန်းထွက်ပါပြီ!', text: r430, icon:'success', confirmButtonColor: '#eab308'}); }
+                            }
+                            lastM = r12; lastE = r430; firstLoad = false;
                         }
-                        lastM = r12; lastE = r430; firstLoad = false;
-                    }
+                    });
                 } catch(e) {}
             }
             setInterval(upL, 2000); upL();
+
             function filterBets() { const v = document.getElementById('searchBet').value.trim(); document.querySelectorAll('.bet-item').forEach(i => { i.style.display = i.getAttribute('data-num').includes(v) ? 'flex' : 'none'; }); }
             function closeVoucher() { showLoad(); setTimeout(() => location.reload(), 100); }
             function openBet(){document.getElementById('betModal').classList.remove('hidden');}
