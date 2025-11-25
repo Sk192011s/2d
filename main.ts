@@ -144,11 +144,9 @@ async function getFootballData() {
         }
         return allMatches.sort((a, b) => (a.status === 'live' ? -1 : 1));
     } catch (e) {
-        console.error("Football Error:", e);
         return [];
     }
 }
-
 
 // ==========================================
 // 3. MAIN SERVER HANDLER
@@ -166,59 +164,7 @@ Deno.serve(async (req) => {
 
   // --- FOOTBALL UI ---
   if (url.pathname === "/football") {
-      return new Response(`
-      <!DOCTYPE html>
-      <html lang="my">
-      <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-          <title>Football Live</title>
-          <script src="https://cdn.tailwindcss.com"></script>
-          <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-          <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-          <link href="https://fonts.googleapis.com/css2?family=Padauk:wght@400;700&display=swap" rel="stylesheet">
-          <style>
-              body { background: #0f172a; color: white; font-family: 'Padauk', sans-serif; padding-bottom: 80px; }
-              .live-dot { width: 8px; height: 8px; background: #ef4444; border-radius: 50%; display: inline-block; animation: blink 1s infinite; }
-              @keyframes blink { 50% { opacity: 0.4; } }
-              .glass { background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(255,255,255,0.1); }
-              .back-btn { position: fixed; top: 15px; left: 15px; z-index: 50; background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 50px; backdrop-filter: blur(5px); }
-          </style>
-      </head>
-      <body class="max-w-md mx-auto p-4 pt-16">
-          <a href="/" class="back-btn text-white text-sm"><i class="fas fa-arrow-left"></i> 2D</a>
-          <h1 class="text-xl font-bold text-center mb-6 text-green-400 fixed top-0 left-0 w-full bg-[#0f172a]/90 backdrop-blur py-4 z-40 shadow-lg">
-              ⚽ Football Live (MM Time)
-          </h1>
-          <div id="player-container" class="hidden sticky top-16 z-50 mb-4 bg-black rounded-lg overflow-hidden border border-gray-600 shadow-2xl">
-              <video id="video" controls class="w-full aspect-video" autoplay></video>
-              <button onclick="closePlayer()" class="w-full bg-red-600 text-white text-xs font-bold py-2">Close Player</button>
-          </div>
-          <div id="loading" class="text-center py-10 text-gray-400"><i class="fas fa-circle-notch fa-spin text-2xl mb-2"></i><br>ပွဲစဉ်များကို ရှာဖွေနေပါသည်...</div>
-          <div id="match-list" class="space-y-3"></div>
-          <script>
-              async function load() {
-                  try {
-                      const res = await fetch('/api/football/matches');
-                      const data = await res.json();
-                      document.getElementById('loading').style.display = 'none';
-                      const list = document.getElementById('match-list');
-                      if (data.length === 0) { list.innerHTML = '<div class="text-center text-gray-500 mt-10">လက်ရှိ ဘောလုံးပွဲများ မရှိသေးပါ</div>'; return; }
-                      data.forEach(m => {
-                          const isLive = m.status === 'live';
-                          const statusBadge = isLive ? '<span class="text-red-500 font-bold text-[10px] flex items-center gap-1"><span class="live-dot"></span> LIVE</span>' : '<span class="text-gray-500 text-[10px]">' + m.time + '</span>';
-                          let btns = '';
-                          if (m.servers.length > 0) { m.servers.forEach(s => { const col = s.name.includes('HD') ? 'bg-red-600' : 'bg-blue-600'; btns += \`<button onclick="play('\${s.url}')" class="\${col} text-white text-[10px] px-3 py-1.5 rounded shadow hover:opacity-80 mr-2 font-bold"><i class="fas fa-play"></i> \${s.name}</button>\`; }); } else if (isLive) { btns = '<span class="text-[10px] text-yellow-500 animate-pulse">Link ရှာနေဆဲ...</span>'; }
-                          const html = \`<div class="glass rounded-xl p-3 shadow-lg"><div class="flex justify-between items-center mb-2"><span class="text-[10px] text-gray-400 truncate w-2/3 uppercase">\${m.league}</span>\${statusBadge}</div><div class="flex justify-between items-center text-center"><div class="w-1/3 flex flex-col items-center"><img src="\${m.home_icon}" class="w-8 h-8 mb-1 bg-white/10 rounded-full p-1"><span class="text-xs font-bold truncate w-full">\${m.home}</span></div><div class="w-1/3 text-xl font-bold text-yellow-400 font-mono">\${m.score}</div><div class="w-1/3 flex flex-col items-center"><img src="\${m.away_icon}" class="w-8 h-8 mb-1 bg-white/10 rounded-full p-1"><span class="text-xs font-bold truncate w-full">\${m.away}</span></div></div><div class="text-center mt-3 pt-2 border-t border-white/5">\${btns}</div></div>\`;
-                          list.innerHTML += html;
-                      });
-                  } catch (e) { document.getElementById('loading').innerText = "Error: " + e.message; }
-              }
-              function play(url) { document.getElementById('player-container').classList.remove('hidden'); const vid = document.getElementById('video'); if (Hls.isSupported()) { const hls = new Hls(); hls.loadSource(url); hls.attachMedia(vid); hls.on(Hls.Events.MANIFEST_PARSED, () => vid.play()); } else if (vid.canPlayType('application/vnd.apple.mpegurl')) { vid.src = url; vid.play(); } window.scrollTo({ top: 0, behavior: 'smooth' }); }
-              function closePlayer() { const vid = document.getElementById('video'); vid.pause(); vid.src = ""; document.getElementById('player-container').classList.add('hidden'); }
-              load();
-          </script>
-      </body></html>`, { headers: { "Content-Type": "text/html" } });
+      return new Response(`<!DOCTYPE html><html lang="my"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>Football Live</title><script src="https://cdn.tailwindcss.com"></script><script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet"><link href="https://fonts.googleapis.com/css2?family=Padauk:wght@400;700&display=swap" rel="stylesheet"><style>body{background:#0f172a;color:white;font-family:'Padauk',sans-serif;padding-bottom:80px}.live-dot{width:8px;height:8px;background:#ef4444;border-radius:50%;display:inline-block;animation:blink 1s infinite}@keyframes blink{50%{opacity:0.4}}.glass{background:rgba(30,41,59,0.8);border:1px solid rgba(255,255,255,0.1)}.back-btn{position:fixed;top:15px;left:15px;z-index:50;background:rgba(0,0,0,0.5);padding:8px 12px;border-radius:50px;backdrop-filter:blur(5px)}</style></head><body class="max-w-md mx-auto p-4 pt-16"><a href="/" class="back-btn text-white text-sm"><i class="fas fa-arrow-left"></i> 2D</a><h1 class="text-xl font-bold text-center mb-6 text-green-400 fixed top-0 left-0 w-full bg-[#0f172a]/90 backdrop-blur py-4 z-40 shadow-lg">⚽ Football Live (MM Time)</h1><div id="player-container" class="hidden sticky top-16 z-50 mb-4 bg-black rounded-lg overflow-hidden border border-gray-600 shadow-2xl"><video id="video" controls class="w-full aspect-video" autoplay></video><button onclick="closePlayer()" class="w-full bg-red-600 text-white text-xs font-bold py-2">Close Player</button></div><div id="loading" class="text-center py-10 text-gray-400"><i class="fas fa-circle-notch fa-spin text-2xl mb-2"></i><br>ပွဲစဉ်များကို ရှာဖွေနေပါသည်...</div><div id="match-list" class="space-y-3"></div><script>async function load(){try{const res=await fetch('/api/football/matches');const data=await res.json();document.getElementById('loading').style.display='none';const list=document.getElementById('match-list');if(data.length===0){list.innerHTML='<div class="text-center text-gray-500 mt-10">လက်ရှိ ဘောလုံးပွဲများ မရှိသေးပါ</div>';return}data.forEach(m=>{const isLive=m.status==='live';const statusBadge=isLive?'<span class="text-red-500 font-bold text-[10px] flex items-center gap-1"><span class="live-dot"></span> LIVE</span>':'<span class="text-gray-500 text-[10px]">'+m.time+'</span>';let btns='';if(m.servers.length>0){m.servers.forEach(s=>{const col=s.name.includes('HD')?'bg-red-600':'bg-blue-600';btns+=\`<button onclick="play('\${s.url}')" class="\${col} text-white text-[10px] px-3 py-1.5 rounded shadow hover:opacity-80 mr-2 font-bold"><i class="fas fa-play"></i> \${s.name}</button>\`;})}else if(isLive){btns='<span class="text-[10px] text-yellow-500 animate-pulse">Link ရှာနေဆဲ...</span>'}const html=\`<div class="glass rounded-xl p-3 shadow-lg"><div class="flex justify-between items-center mb-2"><span class="text-[10px] text-gray-400 truncate w-2/3 uppercase">\${m.league}</span>\${statusBadge}</div><div class="flex justify-between items-center text-center"><div class="w-1/3 flex flex-col items-center"><img src="\${m.home_icon}" class="w-8 h-8 mb-1 bg-white/10 rounded-full p-1"><span class="text-xs font-bold truncate w-full">\${m.home}</span></div><div class="w-1/3 text-xl font-bold text-yellow-400 font-mono">\${m.score}</div><div class="w-1/3 flex flex-col items-center"><img src="\${m.away_icon}" class="w-8 h-8 mb-1 bg-white/10 rounded-full p-1"><span class="text-xs font-bold truncate w-full">\${m.away}</span></div></div><div class="text-center mt-3 pt-2 border-t border-white/5">\${btns}</div></div>\`;list.innerHTML+=html})}catch(e){document.getElementById('loading').innerText="Error: "+e.message}}function play(url){document.getElementById('player-container').classList.remove('hidden');const vid=document.getElementById('video');if(Hls.isSupported()){const hls=new Hls();hls.loadSource(url);hls.attachMedia(vid);hls.on(Hls.Events.MANIFEST_PARSED,()=>vid.play())}else if(vid.canPlayType('application/vnd.apple.mpegurl')){vid.src=url;vid.play()}window.scrollTo({top:0,behavior:'smooth'})}function closePlayer(){const vid=document.getElementById('video');vid.pause();vid.src="";document.getElementById('player-container').classList.add('hidden')}load()</script></body></html>`, { headers: { "Content-Type": "text/html" } });
   }
 
   // ==========================================
@@ -266,10 +212,10 @@ Deno.serve(async (req) => {
     .blink-live { animation: blinker 1.5s linear infinite; }
     @keyframes blinker { 50% { opacity: 0.3; } }
     
-    /* NEW: Slide Up Animation for Number Change */
-    .slide-up-anim { animation: slideUpNumber 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
-    @keyframes slideUpNumber {
-        0% { transform: translateY(50%); opacity: 0; }
+    /* SMOOTH DIGIT SLIDE ANIMATION */
+    .slide-up-anim { animation: slideUpDigit 0.8s cubic-bezier(0.34, 1.56, 0.64, 1); }
+    @keyframes slideUpDigit {
+        0% { transform: translateY(120%); opacity: 0; }
         100% { transform: translateY(0); opacity: 1; }
     }
     
@@ -293,25 +239,42 @@ Deno.serve(async (req) => {
         } catch(e) { hideLoad(); Swal.fire({icon:'error', title:'Error'}); }
     }
     
-    // NEW: Real-time Clock Function
+    // REAL-TIME CLOCK
     function startClock() {
         const tEl = document.getElementById('live_time');
         setInterval(() => {
            const now = new Date();
-           // Myanmar Time Offset is +6:30, but let's stick to local for smooth seconds or adjust if needed.
-           // To keep it simple and ticking every second:
-           tEl.innerText = "Updating at " + now.toLocaleTimeString('en-US', { hour12: true });
+           tEl.innerText = "Updated at: " + now.toLocaleTimeString('en-US', { hour12: true });
         }, 1000);
     }
     
-    // NEW: Animation Helper
+    // SMART DIGIT ANIMATION (Only change differing digits)
     function updateNumberWithAnimation(newVal) {
-        const el = document.getElementById('live_twod');
-        if (el.innerText !== newVal) {
-            el.classList.remove('slide-up-anim');
-            void el.offsetWidth; // Trigger reflow
-            el.innerText = newVal;
-            el.classList.add('slide-up-anim');
+        // Normalize (handle single digits 1 -> 01, or --)
+        let s1 = "-", s2 = "-";
+        if (newVal.length === 2) {
+            s1 = newVal[0]; s2 = newVal[1];
+        } else if (newVal === "--") {
+            s1 = "-"; s2 = "-";
+        }
+
+        const d1 = document.getElementById('d1');
+        const d2 = document.getElementById('d2');
+
+        // Animate Digit 1 only if changed
+        if (d1.innerText !== s1) {
+            d1.classList.remove('slide-up-anim');
+            void d1.offsetWidth; // Trigger Reflow
+            d1.innerText = s1;
+            d1.classList.add('slide-up-anim');
+        }
+
+        // Animate Digit 2 only if changed
+        if (d2.innerText !== s2) {
+            d2.classList.remove('slide-up-anim');
+            void d2.offsetWidth;
+            d2.innerText = s2;
+            d2.classList.add('slide-up-anim');
         }
     }
   </script>`;
@@ -393,34 +356,6 @@ Deno.serve(async (req) => {
       }
   }
 
-  if (!currentUser) {
-    return new Response(`<!DOCTYPE html><html><head><title>Login</title>${commonHead}</head><body class="flex items-center justify-center min-h-screen bg-[url('https://images.unsplash.com/photo-1605218427360-36390f8584b0')] bg-cover bg-center">
-    <div class="absolute inset-0 bg-black/80"></div>${loaderHTML}
-    <div class="relative z-10 w-full max-w-sm p-6">
-      <div class="text-center mb-8"><i class="fas fa-crown text-5xl gold-text mb-2"></i><h1 class="text-3xl font-bold text-white tracking-widest">VIP 2D</h1><p class="text-gray-400 text-xs uppercase tracking-[0.2em]">Premium Betting</p></div>
-      <div class="glass rounded-2xl p-6 shadow-2xl border-t border-white/10">
-        <div class="flex mb-6 bg-slate-800/50 rounded-lg p-1"><button onclick="switchTab('login')" id="tabLogin" class="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white transition-all">အကောင့်ဝင်ရန်</button><button onclick="switchTab('reg')" id="tabReg" class="flex-1 py-2 text-sm font-bold rounded-md text-gray-400 hover:text-white transition-all">အကောင့်သစ်ဖွင့်</button></div>
-        <form id="loginForm" action="/login" method="POST" onsubmit="showLoad()"><div class="space-y-4"><div class="relative"><i class="fas fa-user absolute left-3 top-3.5 text-gray-500"></i><input name="username" placeholder="အမည် (Username)" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><div class="relative"><i class="fas fa-lock absolute left-3 top-3.5 text-gray-500"></i><input name="password" type="password" placeholder="စကားဝှက် (Password)" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><label class="flex items-center text-xs text-gray-400"><input type="checkbox" name="remember" class="mr-2" checked> မှတ်သားထားမည် (၁၅ ရက်)</label><button class="w-full py-3 rounded-xl gold-bg font-bold shadow-lg text-black">အကောင့်ဝင်မည်</button></div></form>
-        <form id="regForm" action="/register" method="POST" class="hidden" onsubmit="showLoad()"><div class="space-y-4"><div class="relative"><i class="fas fa-user-plus absolute left-3 top-3.5 text-gray-500"></i><input name="username" placeholder="အမည်အသစ်ပေးပါ" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><div class="relative"><i class="fas fa-key absolute left-3 top-3.5 text-gray-500"></i><input name="password" type="password" placeholder="စကားဝှက်အသစ်ပေးပါ" class="w-full pl-10 p-3 rounded-xl input-dark" required></div><label class="flex items-center text-xs text-gray-400"><input type="checkbox" name="remember" class="mr-2" checked> မှတ်သားထားမည် (၁၅ ရက်)</label><button class="w-full py-3 rounded-xl bg-slate-700 text-white font-bold hover:bg-slate-600">အကောင့်ဖွင့်မည်</button></div></form>
-      </div>
-    </div>
-    <script> function switchTab(t) { const l=document.getElementById('loginForm'),r=document.getElementById('regForm'),tl=document.getElementById('tabLogin'),tr=document.getElementById('tabReg'); if(t==='login'){l.classList.remove('hidden');r.classList.add('hidden');tl.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tr.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";}else{l.classList.add('hidden');r.classList.remove('hidden');tr.className="flex-1 py-2 text-sm font-bold rounded-md bg-slate-700 text-white shadow";tl.className="flex-1 py-2 text-sm font-bold rounded-md text-gray-400";} } const u=new URLSearchParams(location.search); if(u.get('error')==='forbidden') Swal.fire({icon:'error',title:'မရနိုင်ပါ',text:'Admin အမည်ဖြင့် ဖွင့်ခွင့်မရှိပါ'}); else if(u.get('error')) Swal.fire({icon:'error',title:'မှားယွင်းနေသည်',text:'အမည် သို့မဟုတ် စကားဝှက် မှားယွင်းနေပါသည်',background:'#1e293b',color:'#fff'}); </script></body></html>`, { headers: { "content-type": "text/html" } });
-  }
-
-  const uKey = ["users", currentUser];
-  const uData = (await kv.get(uKey)).value as any;
-  if (!uData) return Response.redirect(url.origin + "/logout");
-  const balance = uData.balance || 0;
-
-  if (url.pathname === "/profile") {
-      const avatar = uData.avatar || "";
-      const txs = []; for await (const e of kv.list({prefix:["transactions"]}, {reverse:true, limit:50})) { if(e.value.user===currentUser) { const t = e.value; t.id=e.key[1]; txs.push(t); } }
-      const contact = (await kv.get(["system", "contact"])).value as any || {};
-      let todayWin = 0, todayLose = 0;
-      for await (const e of kv.list({ prefix: ["bets"] })) { const b = e.value as any; if(b.user === currentUser && b.date === dateStr) { if(b.status === 'WIN') todayWin += (b.winAmount || 0); if(b.status === 'LOSE') todayLose += b.amount; } }
-      return new Response(`<!DOCTYPE html><html><head><title>Profile</title>${commonHead}</head><body>${loaderHTML}${navHTML}<div class="p-6 max-w-md mx-auto space-y-4 pb-24"><div class="glass p-6 rounded-3xl text-center relative mt-4"><div class="relative w-24 h-24 mx-auto mb-3"><div class="w-24 h-24 rounded-full border-4 border-yellow-500 overflow-hidden relative bg-slate-800 flex items-center justify-center">${avatar ? `<img src="${avatar}" class="w-full h-full object-cover">` : `<i class="fas fa-user text-4xl text-gray-500"></i>`}</div><button onclick="document.getElementById('fIn').click()" class="absolute bottom-0 right-0 bg-white text-black rounded-full p-2 border-2 border-slate-900"><i class="fas fa-camera text-xs"></i></button><input type="file" id="fIn" hidden accept="image/*" onchange="upAv(this)"></div><h1 class="text-xl font-bold text-white uppercase">${escapeHtml(currentUser)}</h1><div class="text-yellow-500 font-mono font-bold text-lg">${balance.toLocaleString()} Ks</div></div><div class="grid grid-cols-2 gap-2 text-center"><div class="glass p-3 rounded-xl border-l-2 border-green-500"><div class="text-xs text-gray-400">ဒီနေ့ နိုင်ငွေ</div><div class="font-bold text-green-400 text-sm">+${todayWin.toLocaleString()}</div></div><div class="glass p-3 rounded-xl border-l-2 border-red-500"><div class="text-xs text-gray-400">ဒီနေ့ ရှုံးငွေ</div><div class="font-bold text-red-400 text-sm">-${todayLose.toLocaleString()}</div></div></div><div class="glass p-4 rounded-xl space-y-3"><h3 class="text-xs font-bold text-gray-400 uppercase">Admin ထံဆက်သွယ်ရန်</h3><div class="grid grid-cols-2 gap-2"><div class="bg-blue-900/40 p-2 rounded border border-blue-500/30 text-center"><div class="text-blue-400 text-xs">KPay</div><div class="font-bold select-all text-sm">${contact.kpay_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.kpay_name||''}</div></div><div class="bg-yellow-900/40 p-2 rounded border border-yellow-500/30 text-center"><div class="text-yellow-400 text-xs">Wave</div><div class="font-bold select-all text-sm">${contact.wave_no||'-'}</div><div class="text-[10px] text-gray-500">${contact.wave_name||''}</div></div></div><a href="${contact.tele_link||'#'}" target="_blank" class="block w-full bg-blue-600 text-center py-2 rounded font-bold text-white"><i class="fab fa-telegram"></i> Telegram Channel</a></div><form action="/change_password" method="POST" class="glass p-4 rounded-xl flex gap-2" onsubmit="showLoad()"><input type="password" name="new_password" placeholder="စကားဝှက်အသစ်" class="input-dark text-sm" required><button class="bg-yellow-600 text-white px-4 rounded font-bold text-xs whitespace-nowrap">ချိန်းမည်</button></form><div class="glass rounded-xl p-4"><h3 class="text-xs font-bold text-gray-400 uppercase mb-3">ငွေဖြည့်မှတ်တမ်း</h3><div class="space-y-2 h-48 overflow-y-auto">${txs.length?txs.map(t=>`<div class="flex justify-between items-center p-2 bg-slate-800 rounded border-l-2 border-green-500" onclick="showTx('${t.time}', '${t.amount}', '${t.type}')"><div><span class="text-xs text-gray-400 block">${t.time}</span><span class="text-[10px] text-blue-400 font-bold">Admin Top-up</span></div><div class="flex items-center gap-2"><span class="font-bold text-green-400">+${t.amount}</span><button onclick="delTx(event, '${t.id}')" class="text-gray-600 hover:text-red-500"><i class="fas fa-trash text-xs"></i></button></div></div>`).join(''):'<div class="text-center text-xs text-gray-500">မှတ်တမ်း မရှိပါ</div>'}</div></div><button onclick="doLogout()" class="block w-full text-center text-red-400 text-sm font-bold py-4">အကောင့်ထွက်မည် (LOGOUT)</button></div><script>function upAv(i){if(i.files&&i.files[0]){const r=new FileReader();r.onload=function(e){const im=new Image();im.src=e.target.result;im.onload=function(){const c=document.createElement('canvas');const x=c.getContext('2d');c.width=150;c.height=150;x.drawImage(im,0,0,150,150);showLoad();const fd=new FormData();fd.append('avatar',c.toDataURL('image/jpeg',0.7));fetch('/update_avatar',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{hideLoad();location.reload();});}};r.readAsDataURL(i.files[0]);}}const u=new URLSearchParams(location.search);if(u.get('msg')==='pass_ok')Swal.fire({icon:'success',title:'အောင်မြင်သည်',text:'စကားဝှက်ပြောင်းလဲပြီးပါပြီ',background:'#1e293b',color:'#fff'});function showTx(t,a,type){Swal.fire({title:'ငွေဖြည့်မှတ်တမ်း',html:\`<div class="text-left">အမျိုးအစား: <b>\${type}</b><br>ပမာဏ: <b class="text-green-400">\${a} Ks</b><br>အချိန်: \${t}</div>\`,background:'#1e293b',color:'#fff'});}function delTx(e,id){e.stopPropagation();Swal.fire({title:'မှတ်တမ်းဖျက်မလား?',icon:'warning',showCancelButton:true,confirmButtonColor:'#d33',confirmButtonText:'ဖျက်မည်',cancelButtonText:'မလုပ်တော့ပါ',background:'#1e293b',color:'#fff'}).then(r=>{if(r.isConfirmed){const fd=new FormData();fd.append('id',id);fetch('/delete_transaction',{method:'POST',body:fd}).then(res=>res.json()).then(d=>{if(d.status==='ok')location.reload();});}});}</script></body></html>`, { headers: {"content-type": "text/html"} });
-  }
-
   if (url.pathname === "/history") {
       try {
           const r = await fetch("https://api.thaistock2d.com/2d_result");
@@ -481,13 +416,28 @@ Deno.serve(async (req) => {
                 <i class="fas fa-chevron-right text-gray-500 group-hover:text-white transition"></i>
             </a>
 
-            <div class="glass rounded-3xl p-6 text-center relative overflow-hidden group"><div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-500 to-transparent opacity-50"></div><div class="flex justify-between text-xs text-gray-400 mb-2 font-mono"><span id="live_date">--</span><span class="text-red-500 animate-pulse font-bold">● LIVE</span></div><div class="py-2"><div id="live_twod" class="text-7xl font-bold gold-text font-mono drop-shadow-lg tracking-tighter blink-live">--</div><div class="text-xs text-gray-500 mt-2 font-mono" id="live_time">--:--:--</div></div>
-            
-            <div class="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5">
-                <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">09:30 AM</div><div class="font-bold text-lg text-yellow-500" id="res_930">--</div></div>
-                <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">12:01 PM</div><div class="font-bold text-lg text-white" id="res_12">--</div></div>
-                <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">02:00 PM</div><div class="font-bold text-lg text-yellow-500" id="res_200">--</div></div>
-                <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">04:30 PM</div><div class="font-bold text-lg text-white" id="res_430">--</div></div>
+            <!-- MAIN 2D DISPLAY -->
+            <div class="glass rounded-3xl p-6 text-center relative overflow-hidden group">
+                <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-500 to-transparent opacity-50"></div>
+                <div class="flex justify-between text-xs text-gray-400 mb-2 font-mono">
+                    <span id="live_date">--</span>
+                    <span class="text-red-500 animate-pulse font-bold">● LIVE</span>
+                </div>
+                
+                <!-- UPDATED: SPLIT DIGITS FOR ANIMATION -->
+                <div id="live_twod" class="flex justify-center gap-2 text-8xl font-bold text-white font-mono drop-shadow-lg tracking-tighter h-32 overflow-hidden">
+                    <span id="d1" class="inline-block">--</span>
+                    <span id="d2" class="inline-block"></span>
+                </div>
+
+                <div class="text-xs text-gray-500 mt-2 font-mono" id="live_time">Waiting...</div>
+
+                <div class="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-white/5">
+                    <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">09:30 AM</div><div class="font-bold text-lg text-yellow-500" id="res_930">--</div></div>
+                    <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">12:01 PM</div><div class="font-bold text-lg text-white" id="res_12">--</div></div>
+                    <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">02:00 PM</div><div class="font-bold text-lg text-yellow-500" id="res_200">--</div></div>
+                    <div class="bg-black/20 rounded-lg p-2"><div class="text-[10px] text-gray-500">04:30 PM</div><div class="font-bold text-lg text-white" id="res_430">--</div></div>
+                </div>
             </div>
             
             </div>
